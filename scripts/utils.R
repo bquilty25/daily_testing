@@ -1,5 +1,5 @@
 # Load required packages scripts
-pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst")
+pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst","scales")
 
 plan(multisession,workers=8)
 seed <- 1000
@@ -100,7 +100,6 @@ make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asy
            prolif=ifelse(type=="asymptomatic",prolif*0.8,prolif),
            clear=ifelse(type=="asymptomatic",clear*0.8,clear),
            end=prolif+clear,
-           peak = rnorm(n=n(),mean=min_ct_mean,sd=approx_sd(min_ct_lb,min_ct_ub)),
            onset_t=prolif+rnormTrunc(n=n(),mean = 2,sd=1.5,min=0,max=end)
     ) %>% 
     select.(-c(prolif_mean, prolif_lb, prolif_ub, clear_mean, clear_lb, clear_ub,min_ct_mean,min_ct_lb,min_ct_ub,clear)) %>% 
@@ -108,7 +107,7 @@ make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asy
                  values_to = "x") %>%
     mutate.(y=case_when(name=="start" ~ 40,
                         name=="end"   ~ 40,
-                        name=="peak"  ~ rnorm(n=n(),mean=variant_info[,min_ct_mean],sd=approx_sd(variant_info[,min_ct_lb],variant_info[,min_ct_ub])))
+                        name=="prolif"  ~ rnorm(n=n(),mean=variant_info[,min_ct_mean],sd=approx_sd(variant_info[,min_ct_lb],variant_info[,min_ct_ub])))
             )
             
   models <- traj %>%
