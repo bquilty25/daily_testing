@@ -1,387 +1,174 @@
-my_message <- function(x, ...){
-  message(paste(Sys.time(), x, sep = "    "), ...)
+# Load required packages scripts
+pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst")
+
+plan(multisession,workers=8)
+
+# # McAloon et al. incubation period meta-analysis
+#https://bmjopen.bmj.com/content/10/8/e039652
+inc_parms <- list(mu_inc = 1.63,
+                  sigma_inc = 0.5)
+
+#### LIVERPOOL INNOVA ANALYSIS ----
+innova_liv <- tribble(~left,~right,~pos,~neg,
+                      30,35,1,18,
+                      25,30,3,9,
+                      20,25,18,5,
+                      15,20,17,2) %>% 
+  pivot_longer(c(pos,neg))  
+
+# random sample from binned intervals 
+innova_liv_sim <- innova_liv %>% 
+  group_by(left,right,name) %>% 
+  uncount(value) %>% 
+  ungroup() %>% 
+  mutate(id=row_number()) %>% 
+  crossing(sim=c(1:100)) %>% 
+  mutate(ct=runif(n=n(),min = left,max=right),
+         Innova=as.numeric(as.factor(name))-1)
+
+liv_mod <- glm(Innova~ct,data=innova_liv_sim,family="binomial") 
+
+##### KCL ANALYSIS ----
+pickering <- readxl::read_xlsx(here("data","pickering_dat.xlsx")) %>% 
+  select(-c(`Viral Growth`,...7,...8)) %>% 
+  rename("culture"=...6) %>% 
+  mutate_at(.vars=vars(`SureScreen F`,Innova,Encode),
+            .funs = function(x)ifelse(x=="ND",NA,x)) %>% 
+  mutate_at(.vars=vars(`SureScreen F`,Innova,Encode),
+            .funs = function(x)case_when(x%in%c(0.5,1,2)~1,
+                                         is.na(x)~NA_real_,
+                                         TRUE~0)) %>% 
+  mutate(id=row_number()) %>% 
+  rename(ct=`Ct N1`)
+
+innova_mod <- glm(Innova~ct,data=pickering,family="binomial") 
+culture_mod <- glm(culture~ct,data=pickering,family="binomial") 
+
+# https://www.medrxiv.org/content/10.1101/2020.04.25.20079103v3
+asymp_fraction <- rriskDistributions::get.beta.par(
+  q = c(0.24,  0.38),
+  p = c(0.025, 0.975), 
+  show.output = F, plot = F) %>%
+  as.list
+
+approx_sd <- function(x1, x2){
+  (x2-x1) / (qnorm(0.95) - qnorm(0.05) )
 }
 
-# is this not common to many scripts?
-main_scenarios <-
-  list(`low` = 
-         crossing(released_test = c("Released after first test",
-                                    "Released after mandatory isolation")),
-       `moderate` = 
-         crossing(released_test = c("Released after first test",
-                                    "Released after mandatory isolation")),
-       `high` = 
-         crossing(released_test = "Released after second test"),
-       `maximum` = 
-         crossing(released_test = c("Released after first test",
-                                    "Released after mandatory isolation"))
-  ) %>%
-  bind_rows(.id = "stringency") %>%
-  mutate(stage_released = "Infectious",
-         stringency = fct_inorder(stringency)) 
+#bootstrap confidence interval function
+boot_ci <- function(x,nrep=100) {
 
-probs        <- c(0.025,0.25,0.5,0.75,0.975)
-
-mv2gamma <- function(mean, var){
-  list(shape = mean^2/var,
-       rate  = mean/var,
-       scale = var/mean) 
-}
-
-gamma2mv <- function(shape, rate=NULL, scale=NULL){
-  if (is.null(rate)){
-    rate <- 1/scale
-  }
+  trueval <- tibble(param=c("mu","size"),
+                    mean=c(x$estimate[[2]],
+                           x$estimate[[1]])) 
   
-  list(mean = shape/rate,
-       var  = shape/rate^2)
-}
-
-
-time_to_event <- function(n, mean, var){
-  if (var > 0){
-    parms <- mv2gamma(mean, var)
-    return(rgamma(n, shape = parms$shape, rate = parms$rate))
-  } else{
-    return(rep(mean, n))
-  }
-}
-
-time_to_event_lnorm <- function(n, meanlog, sdlog){
-  rlnorm(n, meanlog = meanlog, sdlog = sdlog)
-}
-
-gen_screening_draws <- function(x){
-  n <- nrow(x)
+  ci <- bootdist(f=x,niter = nrep)$CI %>% 
+    as.data.frame() %>% 
+    select(-Median) %>% 
+    rownames_to_column("param")
   
-  # generate screening random draws for comparison
-  x <- mutate(x, 
-              screen_1 = runif(n, 0, 1),  # on arrival
-              screen_2 = runif(n, 0, 1))  # follow-up
+  left_join(trueval,ci)
 }
 
-# given infection histories above, what proportion of travellers end up being 
-# caught at each step in the screening process?
+#https://science.sciencemag.org/content/sci/early/2021/05/24/science.abi5273.full.pdf
+#assuming 1 and 3 days are 95% interval:
+peak_to_onset <- rriskDistributions::get.norm.par(p=c(0.025,0.975),q=c(1,3),plot = F)
 
-calc_outcomes <- function(x){
- # browser()
-  # generate required times for screening 
+make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asymp_fraction,variant=c("delta")){
   
-  # what's the probability of detection at each test time given a value of CT?
-  x_ <- x %>%
-   inner_join(trajectories$models, by=c("sec_idx"="idx","type")) %>% 
-    select(-data) %>% 
-    mutate(test_t  = pmax(test_t,sec_traced_t),
-           test_q  = test_t-sec_exposed_t,
-           ct      = pmap_dbl(.f=calc_sensitivity,list(model=m,x=test_q))) %>% 
-    mutate(detection_range = case_when(sens_LFA=="higher" ~ as.numeric(as.character(cut(ct,
-                                                                          breaks=c(-Inf,27,30,35,Inf),
-                                                                          labels=c("0.95","0.65","0.3","0")))),
-                                       sens_LFA=="lower" ~ as.numeric(as.character(cut(ct,
-                                                                                       breaks = c(-Inf,20,25,30,35,Inf),
-                                                                                       labels=c("0.824","0.545","0.083","0.053","0")))))) %>% 
-    mutate(test_p=case_when(assay=="PCR"&ct<35~1,
-                            assay=="PCR"&ct>=35~0,
-                            assay=="LFA"~detection_range,
-                            TRUE~NA_real_)) %>% 
-    mutate(screen      = runif(n(), 0, 1)) %>% 
-    mutate(test_label  = detector(pcr = test_p,  u = screen)) 
- 
-  #browser()
-  return(x_)
-}
-
-detector <- function(pcr, u = NULL, spec = 1){
-  
-  if (is.null(u)){
-    u <- runif(n = length(pcr))
-  }
-  
-  # true positive if the PCR exceeds a random uniform
-  # when uninfected, PCR will be 0
-  TP <- pcr > u
-  
-  # false positive if in the top (1-spec) proportion of random draws
-  FP <- (pcr == 0)*(runif(n = length(pcr)) > spec)
-  
-  TP | FP
-}
-
-
-make_delay_label <- function(x,s){
-  paste(na.omit(x), s)
-}
-
-
-capitalize <- function(string) {
-  substr(string, 1, 1) <- toupper(substr(string, 1, 1))
-  string
-}
-
-make_trajectories <- function(n_cases){
+  set.seed(seed)
   #simulate CT trajectories
   #browser()
-  traj <- data.frame(idx=1:n_cases) %>% 
-    crossing(start=0,type=c("symptomatic","asymptomatic") %>% 
-               factor(x = .,
-                      levels = .,
-                      ordered = T)) %>% 
-    mutate(u = runif(n(),0,1)) %>%
+
+  inf <- data.frame(sim=1:n_sims) %>% 
+    mutate.(prop_asy = rbeta(n = n(),
+                            shape1 = asymp_parms$shape1,
+                            shape2 = asymp_parms$shape2)) 
+  
+  inf %<>%  
+    mutate.(x = map.(.x = prop_asy,
+                   .f = ~make_proportions(prop_asy     = .x,
+                                          n_cases      = n_cases))) %>% 
+    unnest.(x) 
+  
+  traj <- inf %>% 
+    crossing.(start=0) %>% 
+    crossing.(variant=variant) %>% 
     # duration from: https://www.thelancet.com/journals/lanmic/article/PIIS2666-5247(20)30172-5/fulltext
     # scaling of asymptomatics taken from https://www.medrxiv.org/content/10.1101/2020.10.21.20217042v2
-    mutate(end=case_when(type == "symptomatic"  ~ qnormTrunc(p = u, mean=17, 
-                                                             sd=approx_sd(15.5,18.6), min = 0),
-                         type == "asymptomatic" ~ qnormTrunc(p = u, mean=17*0.6, 
-                                                             sd=approx_sd(15.5,18.6), min = 0))) %>% 
+    # mutate(end=case_when(type == "symptomatic"  ~ qnormTrunc(p = u, mean=17, 
+    #                                                          sd=approx_sd(15.5,18.6), min = 0),
+    #                      type == "asymptomatic" ~ qnormTrunc(p = u, mean=17*0.6, 
+    #                                                          sd=approx_sd(15.5,18.6), min = 0))) %>% 
     # incubation period from https://bmjopen.bmj.com/content/10/8/e039652.info
-    mutate(onset_t=qlnormTrunc(p = u,
-                               meanlog=1.63,
-                               sdlog=0.5,
-                               min = 0,
-                               max=end)) %>% 
-    pivot_longer(cols = -c(idx,type,u),
-                 values_to = "x") %>% 
+    mutate.(peak=rnormTrunc(n=n(),mean=3.2,sd=approx_sd(2.4, 4.2),min=0),
+           clear=case_when.(type == "symptomatic"  ~ rnormTrunc(n=n(), mean=10.9, 
+                                                               sd=approx_sd(7.8, 14.2), min = 0),
+                           type == "asymptomatic" ~ rnormTrunc(n=n(), mean=7.8, 
+                                                               sd=approx_sd(6.1, 9.7), min = 0)),
+           clear=case_when.(variant=="delta"~1.4*clear,
+                           #variant=="delta"&name=="end"~0.71*y,
+                           TRUE~clear),
+           end=peak+clear,
+           onset_t=peak+rnormTrunc(n=n(),mean = 2,sd=1.5,min=start-peak,max=end-peak)
+           
+           #onset_t=qlnormTrunc(p = u,
+           #                            meanlog=1.63,
+           #                            sdlog=0.5,
+           #                            min = 0,
+           #                            max=end)
+    ) %>% 
+    select.(-clear) %>% 
+    pivot_longer.(cols = -c(sim,prop_asy,idx,type,variant,onset_t),
+                 values_to = "x") %>%
     # peak CT taken from https://www.medrxiv.org/content/10.1101/2020.10.21.20217042v2
-    mutate(y=case_when(name=="start"   ~ 40,
-                       name=="end"     ~ 40,
-                       name=="onset_t" ~ rnorm(n=n(),mean=22.3,sd=4.2))) 
+    mutate.(y=case_when(name=="start" ~ 40,
+                       name=="end"  ~ 40,
+                       name=="peak"&variant!="delta" ~ rnorm(n=n(),mean=22.4,sd=approx_sd(20.7, 24)),
+                       name=="peak"&variant=="delta" ~ 0.7*rnorm(n=n(),mean=22.4,sd=approx_sd(20.7, 24))
+    ))  #multiply Ct by 0.7 for Delta variant (24Ct /34Ct): https://virological.org/t/viral-infection-and-transmission-in-a-large-well-traced-outbreak-caused-by-the-delta-sars-cov-2-variant/724
+  
+  #browser()
   
   models <- traj %>%
-    nest(data = -c(idx,type,u)) %>%  
-    dplyr::mutate(
-      # Perform loess calculation on each individual 
-      m  = purrr::map(data, ~splinefunH(x = .x$x, y = .x$y,
-                                       m = c(0,0,0))),
-      rx = purrr::map(data, ~range(.x$x)),
-      ry = purrr::map(data, ~range(.x$y)),
-      
-      inf_period=purrr::pmap(.f = infectious_period,
-                             .l = list(model = m, 
-                                       rx = rx, # range in x needed for when we're outside the range of the sampled end time
-                                       ry = ry))) %>% # range in y is for debugging
-    unnest_wider(inf_period)
+    nest.(data = -c(idx,type,variant,onset_t)) %>%  
+    mutate.(
+      # Perform approxfun on each set of points
+      m  = map.(data, ~approxfun(x=.x$x,y=.x$y))) 
   
-  return(list(traj=traj,models=models))
+  #cannot pivot wider with "m" column - extract and rejoin
+  x_model <- models %>% 
+    select.(-data)
+  
+  models <- models %>% 
+    select.(-m) %>% 
+    unnest.(data,.drop=F) %>%  
+    select.(-c(y)) %>% 
+    pivot_wider.(names_from=name,values_from = x) %>% 
+    left_join.(x_model)
+
 }
 
-
-## just making sure the proportion of cases are secondary or not
-make_sec_cases <- function(prop_asy, trajectories,n_sec_cases){
-  
-  props <- c("symptomatic"  = (1 - prop_asy),
-             "asymptomatic" = prop_asy)
-  
-  res <- lapply(names(props), 
-                function(x){
-                  filter(trajectories, type == x) %>%
-                    sample_frac(., size = props[[x]])
-                })
-  
-  res <- do.call("rbind",res) %>% 
-    sample_n(n_sec_cases)
-  
-}
-
-
-make_released_quantiles <- function(x, vars){
-  
-  dots1 <- rlang::exprs(sim, scenario)
-  dots2 <- lapply(vars, as.name)
-  
-  dots <- append(dots1, dots2)
-  
-  x_count <- x %>%
-    dplyr::ungroup(.) %>%
-    dplyr::select(!!! dots) %>%
-    dplyr::group_by_all(.) %>%
-    dplyr::count(.) 
-  
-  x_count %>%
-    dplyr::ungroup(.) %>%
-    dplyr::select(-n) %>%
-    dplyr::ungroup %>%
-    as.list %>%
-    map(unique) %>%
-    expand.grid %>%
-    dplyr::left_join(x_count) %>%
-    dplyr::mutate(n = ifelse(is.na(n), 0, n)) %>%
-    tidyr::nest(data = c(sim, n)) %>%
-    dplyr::mutate(
-      Q = purrr::map(
-        .x = data,
-        .f = ~quantile(.x$n, probs = probs)),
-      M = purrr::map_dbl(
-        .x = data, 
-        .f = ~mean(.x$n))) %>%
-    tidyr::unnest_wider(Q) %>%
-    dplyr::select(-data) %>%
-    dplyr::ungroup(.)
-}
-
-make_quantiles <- function(x, y_var,vars, sum = TRUE){
+inf_curve_func <- function(m,start=0,end=30,trunc_t){
   #browser()
-  dots1 <- rlang::exprs(sim, scenario)
-  dots2 <- lapply(vars, as.name)
-  y_var <- as.name(y_var)
-  dots  <- append(dots1, dots2)
+  x <- data.frame(t=seq(start,end,by=0.25)) %>% 
+    mutate(u=runif(n=n(),0,1))
   
-  if (sum){
-    x <- x %>%
-      dplyr::select(!!! dots, y_var) %>%
-      group_by_at(.vars = vars(-y_var)) %>% 
-      summarise(!!y_var := sum(!!y_var, na.rm=T),n=n()) %>% 
-      mutate(!!y_var:=!!y_var/n)
-  }
+  #predict CTs for each individual per day
+  x$ct <- m(x$t)
   
-  x_days <- x %>%
-    dplyr::select(!!! dots, !! y_var) 
-  
-  x_days %>%
-    nest(data = c(!!y_var, sim)) %>%
-    mutate(Q = purrr::map(.x = data, ~quantile( .x[[y_var]],
-                                                probs = probs)),
-           M = map_dbl(.x = data, ~mean(.x[[y_var]]))) %>%
-    unnest_wider(Q) %>% 
-    # mutate(Q = purrr::map(.x = data, ~bayestestR::hdi( .x[[y_var]],
-    #                                             ci = c(0.95,0.5))),
-    #        Mean = map_dbl(.x = data, ~mean(.x[[y_var]])),
-    #        MAP = map_dbl(.x=data, ~as.numeric(bayestestR::point_estimate(.x[[y_var]],centrality="MAP")))) %>% 
-    #unnest(Q) %>% 
-    #pivot_wider(names_from = CI,values_from=c(CI_low,CI_high)) %>% 
-    dplyr::select(-data) 
-  
-}
+  #predict culture probability given CTs
+  x$culture <-  stats::predict(culture_mod, type = "response", newdata = x)
 
-
-delay_to_gamma <- function(x){
-  ans <- dplyr::transmute(x, left = t - 0.5, right = t + 0.5) %>%
-    dplyr::mutate(right = ifelse(right == max(right), Inf, right)) %>%
-    {fitdistcens(censdata = data.frame(.),
-                 distr = "gamma", 
-                 start = list(shape = 1, rate = 1))} 
+  sum_inf <- sum(x$culture)
   
-  gamma2mv(ans$estimate[["shape"]],
-           ans$estimate[["rate"]])
-}
-
-
-rtgamma <- function(n = 1, a = 0, b = Inf, shape, rate = 1, scale = 1/rate){
-  #browser()
-  p_b <- pgamma(q = b, shape = shape, rate = rate)
-  p_a <- pgamma(q = a, shape = shape, rate = rate)
-  
-  u   <- runif(n = n, min = p_a, max = p_b)
-  q   <- qgamma(p = u, shape = shape, rate = rate)
-  
-  return(q)
-}
-
-
-check_unique_values <- function(df, vars){
-  # given a data frame and a vector of variables to be used to facet or group, 
-  # which ones have length < 1?
-  
-  l <- lapply(X = vars, 
-              FUN =function(x){
-                length(unique(df[, x]))
-              })
-  
-  vars[l > 1]
-  
-}
-
-
-waning_piecewise_linear <- function(x, ymax, ymin, k, xmax){
-  
-  if (ymin == ymax){
-    Beta = c(0, ymin)
-  } else {
-    
-    Beta <- solve(a = matrix(data = c(xmax, 1,
-                                      k,    1),    ncol = 2, byrow = T),
-                  b = matrix(data = c(ymin, ymax), ncol = 1))
-  }
-  
-  (x >= 0)*pmin(ymax, pmax(0, Beta[2] + Beta[1]*x))
-  
-}
-
-waning_points <- function(x, X, Y, log = FALSE){
-  
-  if (length(X) != length(Y)){
-    stop("X and Y must be same length")
-  }
-  
-  if (length(Y) == 1){
-    return(rep(Y, length(x)))
-  }
-  
-  if (log){
-    Y <- log(Y)
-  }
-  
-  Beta <- solve(a = cbind(X, 1), b = matrix(Y,ncol=1))
-  
-  Mu <- Beta[2] + Beta[1]*x
-  if (log){
-    Mu <- exp(Mu)
-  }
-  (x >= 0)*pmax(0, Mu)
-  
-}
-
-
-
-summarise_simulation <- function(x, faceting, y_labels = NULL){
-  
-  if(is.null(y_labels)){
-    # if none specified, use all.
-    y_labels_names <- grep(x=names(x), pattern="^trans_pot_", value = T)
-  } else {
-    y_labels_names <- names(y_labels)
-  }
-  
-  all_grouping_vars <- all.vars(faceting)
-  
-  # if (!any(grepl(pattern = "type", x = all_grouping_vars))){
-  #   all_grouping_vars <- c(all_grouping_vars, "type")
-  # }
-  
-  x_summaries <-
-    as.list(y_labels_names) %>%
-    set_names(., .) %>%
-    lapply(X = ., 
-           FUN = function(y){
-             make_quantiles(x,
-                            y_var = y, 
-                            vars = all_grouping_vars)})
-  
-  if (any(grepl(pattern = "type", x = all_grouping_vars))){
-    
-    x_summaries_all <- as.list(y_labels_names) %>%
-      set_names(., .) %>%
-      lapply(X = ., 
-             FUN = function(y){
-               make_quantiles(
-                 mutate(x,
-                        type = "all"),
-                 y_var = y, 
-                 vars = all_grouping_vars)})
-    
-    x_summaries <- map2(.x = x_summaries,
-                        .y = x_summaries_all,
-                        .f = ~bind_rows(.x, .y))
-    
-  }
-  
-  bind_rows(x_summaries, .id = "yvar")
-  
+  return(list(infectiousness=x,sum_inf=sum_inf))
 }
 
 calc_sensitivity <- function(model, x){
   #browser()
   if(!is.na(x)){
-  s <- model(x)
+    s <- model(x)
   } else {
     s <- NA_real_
   }
@@ -389,167 +176,113 @@ calc_sensitivity <- function(model, x){
   return(s)
 }
 
-
-
-read_results <- function(results_path){
-  #browser()
-  list(here::here("results", results_path, "results.rds"),
-       here::here("results", results_path, "input.rds")) %>%
-    map(read_rds) %>%
-    map(bind_rows) %>%
-    {inner_join(.[[1]], .[[2]])}
+## sample asymp proportions
+make_proportions <- function(prop_asy, n_cases){
+  
+  props <- c("symptomatic"  = (1 - prop_asy),
+             "asymptomatic" = prop_asy)
+  
+  x <- data.frame(type=rbinom(n=n_cases,size=1,prob = prop_asy)) %>% 
+    mutate(type=ifelse(type==1,"asymptomatic","symptomatic"),
+           idx=row_number())
+  
 }
 
+propresponsible=function(R0,k,prop){
+  qm1=qnbinom(1-prop,k+1,mu=R0*(k+1)/k)
+  remq=1-prop-pnbinom(qm1-1,k+1,mu=R0*(k+1)/k)
+  remx=remq/dnbinom(qm1,k+1,mu=R0*(k+1)/k)
+  q=qm1+1
+  1-pnbinom(q-1,k,mu=R0)-dnbinom(q,k,mu=R0)*remx
+}
 
-test_times <- function(multiple_tests,tests,tracing_t,sec_exposed_t,quar_dur,sampling_freq = 1, max_tests = 14, n_tests){
+test_times <- function(type,onset_t,sampling_freq=3){
   #browser()
   
-  if(multiple_tests){
-    test_timings <- data.frame(test_t = seq(from=tracing_t,to=(tracing_t+max_tests-1),by=sampling_freq)) %>% 
-    mutate(test_no = paste0("test_", row_number())) %>% 
-    mutate(have_test = row_number()<=n_tests) %>% 
-    filter(have_test)
+  #  if(type=="asymptomatic"){
+  #    initial_t <- sample(size=1,x = c(0:29))
+  # }else{
+  #   initial_t <- sample(size=1,x = c(0:onset_t))
+  # }
+  
+  initial_t <- 0
+  
+  if(!is.na(sampling_freq)){
+  test_timings <- data.frame(test_t = seq(from=initial_t,to=30,by=sampling_freq)) %>% 
+    mutate(test_no = paste0("test_", row_number())) 
   } else {
-    test_timings <- data.frame(test_t=sec_exposed_t+quar_dur) %>% 
-      mutate(test_no = paste0("test_", row_number())) %>% 
-      mutate(have_test = tests)
+    test_timings <- data.frame(test_t = Inf) %>% 
+    mutate(test_no = paste0("test_", row_number())) 
   }
+
   
   return(test_timings)
 }
 
-earliest_pos <- function(df){
+earliest_pos_neg <- function(df,n_negatives){
   #browser()
-  x_q <- unlist(df[(df$test_label),"test_q"])
   
-  if (length(x_q) == 0L){
-    return(Inf)
-  } else {
-    return(min(x_q))
-  }
-}
-
-earliest_pos2 <- function(df){
-  #browser()
-  x_q <- df %>% filter(test_label==TRUE) 
+  x_q <- df %>% filter.(test_label==TRUE)
   
   if (nrow(x_q) == 0L){
-    return(data.frame(test_no="None",test_p=0,test_q=Inf))
+    earliest_pos_t <- Inf
   } else {
-    return((x_q %>% select(test_no,test_p,test_q) %>% slice_min(test_q)))
+    earliest_pos_t <- x_q %>% select.(test_no,test_p,test_t) %>% slice_min.(test_t) %>% pull.(test_t)
   }
+  
+  # earliest_neg_t <- df %>% 
+  # filter(test_t>earliest_pos_t,!test_label) %>% 
+  # mutate(diff=test_t-lag(test_t)) %>% 
+  # mutate(diff=replace_na.(diff,1)) %>% 
+  # filter(diff==1) %>% 
+  # slice_min(test_t) %>% 
+  # slice_max(test_t,n = n_negatives) %>% 
+  # pull(test_t)
+  
+  earliest_neg_t <- df[test_t > earliest_pos_t][test_label==FALSE][, `:=`(diff = test_t - lag(test_t))][, `:=`(diff = replace_na.(diff, 1))][diff == 1, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= n_negatives]][, .SD[order(test_t, decreasing = TRUE)][frankv(-test_t, ties.method = "min",  na.last = "keep") <= 1L]][1,test_t]
+  
+  
+  return(c(start_iso=earliest_pos_t,
+              end_iso=earliest_neg_t))
 }
 
 
-infectious_period <- function(model, rx, ry){
+inf_and_test <- function(traj,sampling_freq=c(NA,3)){
   #browser()
-  newdata <- data.frame(x = seq(from = 0, to = 30, 0.1))
   
-  newdata$y_pred <- model(newdata$x)
+  message(sprintf("\n%s == SCENARIO %d ======", Sys.time(), traj$sim[1]))
   
-  
-  newdata <- mutate(newdata,
-                    y_pred = ifelse(x > rx[2], 40, y_pred))
-  
-  newdata %>%
-    mutate(infectious = y_pred <= 30) %>%
-    filter(infectious) %>%
-    summarise(inf_start = min(x),
-              inf_end   = max(x))
-  
-}
-
-calc_overlap <- function(x){
-#browser()
-  x <-
-    x %>% 
-    rowwise() %>% 
-    mutate(
-      symp_overlap = case_when(
-        type == "symptomatic" ~ Overlap(
-          x = c(inf_start,
-                inf_end),
-          y = c(onset_q,
-                symp_end_q)
-        ) * adhering_iso,
-        type == "asymptomatic" ~ 0
-      ),
-      symp_overlap = ifelse(is.infinite(inf_start) &
-                              is.infinite(inf_end), 0, symp_overlap),
-      quar_overlap = case_when(
-        #If symptomatic before tracing, no quarantine
-        !multiple_tests & onset_q < traced_q & type == "symptomatic" ~ 0, 
-        #If symptomatic during quarantine, quarantine ends at onset
-        !multiple_tests & onset_q > traced_q & onset_q < quar_end_q & type == "symptomatic" ~ 
-        Overlap(
-          x = c(inf_start,
-                inf_end),
-          y = c(traced_q,
-                onset_q)
-        ) * adhering_quar,
-        #If symptomatic after quarantine, quarantine is completed in full
-        !multiple_tests & onset_q > traced_q & onset_q > quar_end_q & type == "symptomatic" ~ 
-          Overlap(
-            x = c(inf_start,
-                  inf_end),
-            y = c(traced_q,
-                  quar_end_q)
-          ) * adhering_quar,
-        #If asymptomatic, quarantine is completed in full
-        !multiple_tests & type == "asymptomatic" ~ Overlap(
-          x = c(inf_start,
-                inf_end),
-          y = c(traced_q,
-                quar_end_q)
-        ) * adhering_quar,
-        multiple_tests ~ 0
-      ),
-      quar_overlap = ifelse(is.infinite(inf_start) &
-                              is.infinite(inf_end), 0, quar_overlap),
-      test_overlap = case_when(
-        #If testing and symptoms occur before the test, no-post test isolation
-        tests & onset_q < earliest_q &type =="symptomatic" ~ 0,
-        #If testing and symptoms occur after a positive test, end post-positive test isolation and begin symptomatic
-        tests & onset_q > earliest_q & onset_q < test_iso_end_q & type == "symptomatic" ~
-          Overlap(
-        x = c(inf_start,
-              inf_end),
-        y = c(earliest_q,
-              onset_q)
-      ) * adhering_iso,
-      #If testing and symptoms occur after the end of post-positive test isolation, complete full self-isolation
-      tests & onset_q > earliest_q & onset_q > test_iso_end_q & type == "symptomatic" ~
-        Overlap(
-          x = c(inf_start,
-                inf_end),
-          y = c(earliest_q,
-                test_iso_end_q)
-        ) * adhering_iso,
-      #If testing and asymptomatic, complete full self-isolation
-      tests & type == "asymptomatic" ~
-        Overlap(
-          x = c(inf_start,
-                inf_end),
-          y = c(earliest_q,
-                test_iso_end_q)
-        ) * adhering_iso,
-      !tests ~ 0),
-      test_overlap = ifelse(is.infinite(inf_start) &
-                              is.infinite(inf_end), 0, test_overlap),
-      max_overlap = case_when(
-        #If quarantine and testing, time in quarantine is sum of quarantine  symptomatic and test self-isolation durations
-        tests &
-          !multiple_tests ~ symp_overlap + quar_overlap + test_overlap,
-        #If daily testing, time in isolation is sum of symptomatic and test self-isolation durations
-        tests &
-          multiple_tests  ~ symp_overlap + test_overlap,
-        #If quarantine only, sum of symptomatic and quarantine overlap
-        !tests            ~ symp_overlap + quar_overlap
+  traj %>% as.data.frame() %>% 
+    mutate(infectiousness = pmap(inf_curve_func, .l = list(m = m,start=start,end=end)))  %>% 
+    unnest_wider(infectiousness) %>% 
+    ungroup() %>%
+    mutate.(norm_sum = (sum_inf - min(sum_inf)) / (max(sum_inf) - min(sum_inf))) %>% 
+    #testing
+    crossing(sampling_freq = sampling_freq) %>% 
+    mutate.(test_times = pmap(
+      .f = test_times,
+      list(
+        sampling_freq = sampling_freq,
+        onset_t = onset_t,
+        type = type
       )
-    )
+    )) %>%
+    unnest.(test_times,.drop=F) %>%
+    mutate.(
+      ct = pmap_dbl(.f = calc_sensitivity, list(model = m, x = test_t)),
+      test_p = stats::predict(innova_mod, type = "response", newdata = data.frame(ct = ct)),
+      test_label = detector(test_p = test_p,  u = runif(n = n(), 0, 1))
+    ) 
+} 
+
+detector <- function(test_p, u = NULL){
+  
+  if (is.null(u)){
+    u <- runif(n = length(test_p))
+  }
+  
+  # true positive if the test exceeds a random uniform
+  # when uninfected, PCR will be 0
+  TP <- test_p > u
   
 }
-
-approx_sd <- function(x1, x2){
-      (x2-x1) / (qnorm(0.95) - qnorm(0.05) )
-   }
