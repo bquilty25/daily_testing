@@ -2,6 +2,7 @@
 pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst")
 
 plan(multisession,workers=8)
+seed <- 1000
 
 # # McAloon et al. incubation period meta-analysis
 #https://bmjopen.bmj.com/content/10/8/e039652
@@ -74,11 +75,11 @@ boot_ci <- function(x,nrep=100) {
 #assuming 1 and 3 days are 95% interval:
 peak_to_onset <- rriskDistributions::get.norm.par(p=c(0.025,0.975),q=c(1,3),plot = F)
 
-make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asymp_fraction,variant=c("delta")){
-  
+make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asymp_fraction,variant_info){
+ 
   set.seed(seed)
   #simulate CT trajectories
-  #browser()
+  
 
   inf <- data.frame(sim=1:n_sims) %>% 
     mutate.(prop_asy = rbeta(n = n(),
@@ -93,43 +94,23 @@ make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asy
   
   traj <- inf %>% 
     crossing.(start=0) %>% 
-    crossing.(variant=variant) %>% 
-    # duration from: https://www.thelancet.com/journals/lanmic/article/PIIS2666-5247(20)30172-5/fulltext
-    # scaling of asymptomatics taken from https://www.medrxiv.org/content/10.1101/2020.10.21.20217042v2
-    # mutate(end=case_when(type == "symptomatic"  ~ qnormTrunc(p = u, mean=17, 
-    #                                                          sd=approx_sd(15.5,18.6), min = 0),
-    #                      type == "asymptomatic" ~ qnormTrunc(p = u, mean=17*0.6, 
-    #                                                          sd=approx_sd(15.5,18.6), min = 0))) %>% 
-    # incubation period from https://bmjopen.bmj.com/content/10/8/e039652.info
-    mutate.(peak=rnormTrunc(n=n(),mean=3.2,sd=approx_sd(2.4, 4.2),min=0),
-           clear=case_when.(type == "symptomatic"  ~ rnormTrunc(n=n(), mean=10.9, 
-                                                               sd=approx_sd(7.8, 14.2), min = 0),
-                           type == "asymptomatic" ~ rnormTrunc(n=n(), mean=7.8, 
-                                                               sd=approx_sd(6.1, 9.7), min = 0)),
-           clear=case_when.(variant=="delta"~1.4*clear,
-                           #variant=="delta"&name=="end"~0.71*y,
-                           TRUE~clear),
-           end=peak+clear,
-           onset_t=peak+rnormTrunc(n=n(),mean = 2,sd=1.5,min=start-peak,max=end-peak)
-           
-           #onset_t=qlnormTrunc(p = u,
-           #                            meanlog=1.63,
-           #                            sdlog=0.5,
-           #                            min = 0,
-           #                            max=end)
+    crossing.(variant_info) %>% 
+    mutate.(prolif=rnormTrunc(n=n(),mean=prolif_mean,sd=approx_sd(prolif_lb,prolif_ub),min=0),
+           clear=rnormTrunc(n=n(), mean=clear_mean, sd=approx_sd(clear_lb,clear_ub), min = 0),
+           prolif=ifelse(type=="asymptomatic",prolif*0.8,prolif),
+           clear=ifelse(type=="asymptomatic",clear*0.8,clear),
+           end=prolif+clear,
+           peak = rnorm(n=n(),mean=min_ct_mean,sd=approx_sd(min_ct_lb,min_ct_ub)),
+           onset_t=prolif+rnormTrunc(n=n(),mean = 2,sd=1.5,min=0,max=end)
     ) %>% 
-    select.(-clear) %>% 
+    select.(-c(prolif_mean, prolif_lb, prolif_ub, clear_mean, clear_lb, clear_ub,min_ct_mean,min_ct_lb,min_ct_ub,clear)) %>% 
     pivot_longer.(cols = -c(sim,prop_asy,idx,type,variant,onset_t),
                  values_to = "x") %>%
-    # peak CT taken from https://www.medrxiv.org/content/10.1101/2020.10.21.20217042v2
     mutate.(y=case_when(name=="start" ~ 40,
-                       name=="end"  ~ 40,
-                       name=="peak"&variant!="delta" ~ rnorm(n=n(),mean=22.4,sd=approx_sd(20.7, 24)),
-                       name=="peak"&variant=="delta" ~ 0.7*rnorm(n=n(),mean=22.4,sd=approx_sd(20.7, 24))
-    ))  #multiply Ct by 0.7 for Delta variant (24Ct /34Ct): https://virological.org/t/viral-infection-and-transmission-in-a-large-well-traced-outbreak-caused-by-the-delta-sars-cov-2-variant/724
-  
-  #browser()
-  
+                        name=="end"   ~ 40,
+                        name=="peak"  ~ rnorm(n=n(),mean=variant_info[,min_ct_mean],sd=approx_sd(variant_info[,min_ct_lb],variant_info[,min_ct_ub])))
+            )
+            
   models <- traj %>%
     nest.(data = -c(idx,type,variant,onset_t)) %>%  
     mutate.(
@@ -151,7 +132,7 @@ make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asy
 
 inf_curve_func <- function(m,start=0,end=30,trunc_t){
   #browser()
-  x <- data.frame(t=seq(start,end,by=0.25)) %>% 
+  x <- data.frame(t=seq(start,end,by=1)) %>% 
     mutate(u=runif(n=n(),0,1))
   
   #predict CTs for each individual per day
@@ -285,4 +266,8 @@ detector <- function(test_p, u = NULL){
   # when uninfected, PCR will be 0
   TP <- test_p > u
   
+}
+
+quibble <- function(x, q = c(0.25, 0.5, 0.75)) {
+  tibble(x = quantile(x, q), q = q)
 }
