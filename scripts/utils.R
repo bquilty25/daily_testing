@@ -1,5 +1,5 @@
 # Load required packages scripts
-pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst","scales")
+pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst","scales","data.table")
 
 plan(multisession,workers=8)
 seed <- 1000
@@ -176,7 +176,7 @@ propresponsible=function(R0,k,prop){
   1-pnbinom(q-1,k,mu=R0)-dnbinom(q,k,mu=R0)*remx
 }
 
-test_times <- function(type,onset_t,sampling_freq=3){
+test_times <- function(type,onset_t,end,sampling_freq=3){
   #browser()
   
   #  if(type=="asymptomatic"){
@@ -188,7 +188,7 @@ test_times <- function(type,onset_t,sampling_freq=3){
   initial_t <- 0
   
   if(!is.na(sampling_freq)){
-  test_timings <- data.frame(test_t = seq(from=initial_t,to=30,by=sampling_freq)) %>% 
+  test_timings <- data.frame(test_t = seq(from=initial_t,to=end,by=sampling_freq)) %>% 
     mutate(test_no = paste0("test_", row_number())) 
   } else {
     test_timings <- data.frame(test_t = Inf) %>% 
@@ -199,10 +199,10 @@ test_times <- function(type,onset_t,sampling_freq=3){
   return(test_timings)
 }
 
-earliest_pos_neg <- function(df,n_negatives){
+earliest_pos_neg <- function(df,n_negatives,delay){
   #browser()
   
-  x_q <- df %>% filter.(test_label==TRUE)
+  x_q <- df[[1]] %>% filter.(test_label==TRUE)
   
   if (nrow(x_q) == 0L){
     earliest_pos_t <- Inf
@@ -210,20 +210,14 @@ earliest_pos_neg <- function(df,n_negatives){
     earliest_pos_t <- x_q %>% select.(test_no,test_p,test_t) %>% slice_min.(test_t) %>% pull.(test_t)
   }
   
-  # earliest_neg_t <- df %>% 
-  # filter(test_t>earliest_pos_t,!test_label) %>% 
-  # mutate(diff=test_t-lag(test_t)) %>% 
-  # mutate(diff=replace_na.(diff,1)) %>% 
-  # filter(diff==1) %>% 
-  # slice_min(test_t) %>% 
-  # slice_max(test_t,n = n_negatives) %>% 
-  # pull(test_t)
+  earliest_neg_t <- df[[1]][test_t > earliest_pos_t + delay][test_label==FALSE][, `:=`(diff = test_t - lag(test_t))][, `:=`(diff = replace_na.(diff, 1))][diff == 1, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= n_negatives]][, .SD[order(test_t, decreasing = TRUE)][frankv(-test_t, ties.method = "min",  na.last = "keep") <= 1L]][1,test_t]
   
-  earliest_neg_t <- df[test_t > earliest_pos_t][test_label==FALSE][, `:=`(diff = test_t - lag(test_t))][, `:=`(diff = replace_na.(diff, 1))][diff == 1, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= n_negatives]][, .SD[order(test_t, decreasing = TRUE)][frankv(-test_t, ties.method = "min",  na.last = "keep") <= 1L]][1,test_t]
+  if(is.na(earliest_neg_t)|earliest_neg_t>10){
+    earliest_neg_t <- 10
+  }
   
   
-  return(c(start_iso=earliest_pos_t,
-              end_iso=earliest_neg_t))
+  return(paste(earliest_pos_t,earliest_neg_t,sep=","))
 }
 
 
@@ -244,14 +238,17 @@ inf_and_test <- function(traj,sampling_freq=c(NA,3)){
       list(
         sampling_freq = sampling_freq,
         onset_t = onset_t,
-        type = type
+        type = type,
+        end = end
       )
     )) %>%
     unnest.(test_times,.drop=F) %>%
     mutate.(
       ct = pmap_dbl(.f = calc_sensitivity, list(model = m, x = test_t)),
-      test_p = stats::predict(innova_mod, type = "response", newdata = data.frame(ct = ct)),
-      test_label = detector(test_p = test_p,  u = runif(n = n(), 0, 1))
+      test_p = stats::predict(innova_mod, type = "response", newdata = data.frame(ct=ct)),
+      test_label = detector(test_p = test_p,  u = runif(n = n(), 0, 1)),
+      culture = stats::predict(culture_mod, type = "response", newdata = data.frame(ct=ct)),
+      infectious_label = detector(test_p = culture, u = runif(n=n(),0,1))
     ) 
 } 
 
