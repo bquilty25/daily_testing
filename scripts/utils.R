@@ -264,6 +264,10 @@ detector <- function(test_p, u = NULL){
   
 }
 
-quibble <- function(x, q = c(0.25, 0.5, 0.75)) {
-  tibble(x = quantile(x, q), q = q)
-}
+#summarise multiple columns
+p <- c(0.025, 0.5, 0.975)
+
+p_names <- map_chr(p, ~paste0(.x*100, "%"))
+
+p_funs <- map.(p, ~partial(quantile, probs = .x, na.rm = TRUE)) %>% 
+  set_names(nm = p_names)

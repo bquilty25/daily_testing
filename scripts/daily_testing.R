@@ -56,23 +56,24 @@ prop_averted <- neg_analysis %>%
           iso_dur=ifelse(iso_dur>10,10,iso_dur),
           days_saved=10-iso_dur) %>% 
   rename.(inf_community=isoFALSE,
-          inf_iso=isoTRUE) %>% 
-  mutate.(tests_used=ifelse(is.na(n_negatives),0,iso_dur-delay),
-          across.(c(iso_dur,days_saved,inf_community,n_negatives,delay,tests_used),as.factor)) %>% 
+          inf_iso=isoTRUE)
+
+qsave(prop_averted,"prop_averted.qs")
+  
+#create plots
+plot_dat <-  prop_averted %>% mutate.(tests_used=ifelse(is.na(n_negatives),0,iso_dur-delay),
+                 across.(c(iso_dur,days_saved,inf_community,n_negatives,delay,tests_used),as.factor)) %>% 
   mutate.(n_negatives=fct_explicit_na(n_negatives,"No test"),
           n_negatives=fct_recode(n_negatives,
                                  "3 negatives" = "3",
                                  "2 negatives" = "2",
                                  "1 negative"  = "1"),
           delay=fct_recode(delay,
-                                 "3 days wait" = "3",
-                                 "5 days wait" = "5",
-                                 "7 days wait" = "7"))
+                           "3 days wait" = "3",
+                           "5 days wait" = "5",
+                           "7 days wait" = "7"))
 
-qsave(prop_averted,"prop_averted.qs")
-  
-#create plots
-plot_a <- prop_averted %>% 
+plot_a <- plot_dat %>% 
   filter.(variant=="vacc") %>% 
   ggplot(aes(x=days_saved,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
   geom_bar(alpha=0.5,position="dodge")+
@@ -80,15 +81,15 @@ plot_a <- prop_averted %>%
   scale_x_discrete("Days saved vs. 10 day isolation")
   #scale_x_reverse("Days saved vs. 10 day isolation",breaks=breaks_width(-1))
 
-plot_b <- prop_averted %>% 
+plot_b <- plot_dat %>% 
   filter.(variant=="vacc") %>% 
-  ggplot(aes(x=inf_community,y=..prop..,,group=n_negatives,fill=n_negatives,colour=n_negatives))+
+  ggplot(aes(x=inf_community,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
   geom_bar(alpha=0.5,position="dodge")+
   scale_y_continuous("Proportion of infected individuals",labels = percent)+
   scale_x_discrete("Infectious days in the community")
 
 #tests used post positive test
-plot_c <- prop_averted  %>% 
+plot_c <- plot_dat  %>% 
   filter.(variant=="vacc") %>% 
   ggplot(aes(x=tests_used,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
   geom_bar(alpha=0.5,position="dodge")+
@@ -107,3 +108,16 @@ plot_a+plot_c+plot_b+
   ggh4x::facet_nested(delay+n_negatives~.,nest_line = T)
 
 ggsave("main_plot.png",width=210,height=297,units="mm",dpi=600,bg = "white")
+
+#count infectious person hours per sim
+prop_averted %>% 
+  summarise.(sum_inf_comm=sum(inf_community),
+             sum_days_saved=sum(days_saved),
+             .by=c(sim,variant,n_negatives,delay,test_to_release)) %>% 
+  pivot_longer.(c(sum_inf_comm,sum_days_saved)) %>% 
+  group_by(name,variant,n_negatives,delay,test_to_release) %>% 
+  summarise_at(vars(value), funs(!!!p_funs)) %>% 
+  as_tidytable() %>% 
+  ggplot()+
+  geom_pointrange(aes(shape=factor(test_to_release),x=interaction(delay,n_negatives),y=`50%`,ymin=`2.5%`,ymax=`97.5%`),position = position_dodge(0.2))+
+  facet_wrap(~name,scales = "free")
