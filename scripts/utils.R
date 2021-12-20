@@ -247,9 +247,9 @@ inf_in_iso <- function(df,iso_interval){
   df %>%
     mutate.(iso_interval=iso_interval) %>% 
     separate.(iso_interval,into = c("start_iso","end_iso"),sep = ",",convert=TRUE) %>% 
-    mutate.(iso=between.(t,start_iso,end_iso)) %>% 
+    mutate.(iso=between.(t,start_iso,end_iso-1)) %>% #1 minus upper bound
     summarise.(inf_iso=sum(infectious_label),.by=c(start_iso,end_iso,iso)) %>%
-    pivot_wider.(names_from = iso,values_from = inf_iso,names_prefix = "iso")
+    pivot_wider.(names_from = iso,values_from = inf_iso,names_prefix = "iso") 
 }
 
 detector <- function(test_p, u = NULL){

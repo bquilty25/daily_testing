@@ -49,10 +49,15 @@ prop_averted <- neg_analysis %>%
   left_join.(traj_ %>%
                nest(data=c(ct, test_t, test_no, test_p, test_label)) %>% 
                select.(sim,idx,type,variant,m,infectiousness)) %>% 
-  mutate.(in_iso=map2.(.f=inf_in_iso,.x=infectiousness,.y=iso_interval)) %>% 
-  unnest.(in_iso) %>% 
-  filter.(isoFALSE+isoTRUE>0) %>% 
-  mutate.(iso_dur=end_iso-start_iso,
+  unnest.(infectiousness) %>% 
+  separate.(iso_interval,into = c("start_iso","end_iso"),sep = ",",convert=TRUE) %>% 
+  filter.(t>=start_iso) %>% 
+  mutate.(iso=between.(t,start_iso,end_iso-1)) %>% #1 minus upper bound
+  summarise.(inf_iso=sum(infectious_label),.by=c(sim,idx,type,variant,n_negatives,delay,test_to_release,start_iso,end_iso,iso)) %>%
+  pivot_wider.(names_from = iso,values_from = inf_iso,names_prefix = "iso") %>% 
+  filter.(!is.na(isoTRUE)) %>% 
+  mutate.(inf_days=isoTRUE+isoFALSE,
+          iso_dur=end_iso-start_iso,
           iso_dur=ifelse(iso_dur>10,10,iso_dur),
           days_saved=10-iso_dur) %>% 
   rename.(inf_community=isoFALSE,
@@ -62,7 +67,7 @@ qsave(prop_averted,"prop_averted.qs")
   
 #create plots
 plot_dat <-  prop_averted %>% mutate.(tests_used=ifelse(is.na(n_negatives),0,iso_dur-delay),
-                 across.(c(iso_dur,days_saved,inf_community,n_negatives,delay,tests_used),as.factor)) %>% 
+                 across.(c(iso_dur,days_saved,n_negatives,delay,tests_used),as.factor)) %>% 
   mutate.(n_negatives=fct_explicit_na(n_negatives,"No test"),
           n_negatives=fct_recode(n_negatives,
                                  "3 negatives" = "3",
@@ -75,24 +80,25 @@ plot_dat <-  prop_averted %>% mutate.(tests_used=ifelse(is.na(n_negatives),0,iso
 
 plot_a <- plot_dat %>% 
   filter.(variant=="vacc") %>% 
-  ggplot(aes(x=days_saved,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
-  geom_bar(alpha=0.5,position="dodge")+
+  ggplot(aes(x=days_saved,group=n_negatives,fill=n_negatives,colour=n_negatives))+
+  geom_histogram(alpha=0.5,position="dodge",stat="count")+
   scale_y_continuous("Proportion of infected individuals",position = "left",labels = percent)+
   scale_x_discrete("Days saved vs. 10 day isolation")
   #scale_x_reverse("Days saved vs. 10 day isolation",breaks=breaks_width(-1))
 
 plot_b <- plot_dat %>% 
   filter.(variant=="vacc") %>% 
-  ggplot(aes(x=inf_community,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
-  geom_bar(alpha=0.5,position="dodge")+
-  scale_y_continuous("Proportion of infected individuals",labels = percent)+
+  ggplot(aes(x=inf_community,group=n_negatives,fill=n_negatives,colour=n_negatives))+
+  geom_histogram(alpha=0.5,stat="count")+
+  #scale_x_log10()
+  #scale_y_continuous("Proportion of infected individuals",labels = percent)#+
   scale_x_discrete("Infectious days in the community")
 
 #tests used post positive test
 plot_c <- plot_dat  %>% 
   filter.(variant=="vacc") %>% 
-  ggplot(aes(x=tests_used,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
-  geom_bar(alpha=0.5,position="dodge")+
+  ggplot(aes(x=tests_used,group=n_negatives,fill=n_negatives,colour=n_negatives))+
+  geom_histogram(alpha=0.5,position="dodge",stat="count")+
   scale_y_continuous("Proportion of infected individuals",labels = percent)+
   scale_x_discrete("Tests used")
 
@@ -102,7 +108,8 @@ plot_a+plot_c+plot_b+
   theme_minimal()&
   theme(axis.title.y=element_blank(),
         axis.text.y=element_blank(),
-        axis.ticks.y=element_blank())&
+        axis.ticks.y=element_blank(),
+        legend.position = "none")&
   scale_color_brewer(palette = "Set1")&
   scale_fill_brewer(palette="Set1")&
   ggh4x::facet_nested(delay+n_negatives~.,nest_line = T)
@@ -119,5 +126,5 @@ prop_averted %>%
   summarise_at(vars(value), funs(!!!p_funs)) %>% 
   as_tidytable() %>% 
   ggplot()+
-  geom_pointrange(aes(shape=factor(test_to_release),x=interaction(delay,n_negatives),y=`50%`,ymin=`2.5%`,ymax=`97.5%`),position = position_dodge(0.2))+
+  geom_pointrange(aes(x=interaction(test_to_release,delay,n_negatives),y=`50%`,ymin=`2.5%`,ymax=`97.5%`),position = position_dodge(0.5))+
   facet_wrap(~name,scales = "free")
