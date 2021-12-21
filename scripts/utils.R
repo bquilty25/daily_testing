@@ -1,5 +1,5 @@
 # Load required packages scripts
-pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst","scales","data.table","qs","ggh4x")
+pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst","scales","data.table","qs","ggh4x","ggdist","profvis")
 
 plan(multisession,workers=8)
 seed <- 1000
@@ -20,10 +20,11 @@ pickering <- readxl::read_xlsx(here("data","pickering_dat.xlsx")) %>%
                                          is.na(x)~NA_real_,
                                          TRUE~0)) %>% 
   mutate(id=row_number()) %>% 
-  rename(ct=`Ct N1`)
+  rename(ct=`Ct N1`) %>% 
+  mutate(vl=(-(ct-44.34)/3.134))
 
-innova_mod <- glm(Innova~ct,data=pickering,family="binomial") 
-culture_mod <- glm(culture~ct,data=pickering,family="binomial") 
+innova_mod <- glm(Innova~vl,data=pickering,family="binomial") 
+culture_mod <- glm(culture~vl,data=pickering,family="binomial") 
 
 # https://www.medrxiv.org/content/10.1101/2020.04.25.20079103v3
 asymp_fraction <- rriskDistributions::get.beta.par(
@@ -85,9 +86,9 @@ make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asy
     select.(-c(prolif_mean, prolif_lb, prolif_ub, clear_mean, clear_lb, clear_ub,min_ct_mean,min_ct_lb,min_ct_ub,clear)) %>% 
     pivot_longer.(cols = -c(sim,prop_asy,idx,type,variant,onset_t),
                  values_to = "x") %>%
-    mutate.(y=case_when(name=="start" ~ 40,
-                        name=="end"   ~ 40,
-                        name=="prolif"  ~ rnorm(n=n(),mean=variant_info[,min_ct_mean],sd=approx_sd(variant_info[,min_ct_lb],variant_info[,min_ct_ub])))
+    mutate.(y=case_when(name=="start" ~ 0,
+                        name=="end"   ~ 0,
+                        name=="prolif"  ~ rnorm(n=n(),mean=variant_info[,max_vl_mean],sd=approx_sd(variant_info[,max_vl_lb],variant_info[,max_vl_ub])))
             )
             
   models <- traj %>%
@@ -113,8 +114,8 @@ inf_curve_func <- function(m,start=0,end=30,trunc_t){
   #browser()
   x <- tidytable(t=seq(start,end,by=1)) %>% 
     mutate.(u=runif(n=n(),0,1),
-            ct=m(t),
-            culture=stats::predict(culture_mod, type = "response", newdata = tidytable(ct=ct)),
+            vl=m(t),
+            culture=stats::predict(culture_mod, type = "response", newdata = tidytable(vl=vl)),
             infectious_label = rbernoulli(n=n(),p=culture)) 
 
   sum_inf <- sum(x$infectious_label)
@@ -177,10 +178,10 @@ test_times <- function(type,onset_t,end,sampling_freq=3){
   return(test_timings)
 }
 
-earliest_pos_neg <- function(df,test_to_release,n_negatives,delay){
+earliest_pos_neg <- function(df,n_negatives,test_to_release,delay){
   #browser()
   
-  x_q <- df[[1]] %>% filter.(test_label==TRUE)
+  x_q <- df %>% filter.(test_label==TRUE)
   
   if (nrow(x_q) == 0L){
     start_iso <- Inf
@@ -190,10 +191,10 @@ earliest_pos_neg <- function(df,test_to_release,n_negatives,delay){
   
   if(test_to_release){
   # find earliest series of negative tests after delay
-  end_iso <- df[[1]][test_t > start_iso + delay][test_label==FALSE][, `:=`(diff = test_t - lag(test_t))][, `:=`(diff = replace_na.(diff, 1))][diff == 1, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= n_negatives]][, .SD[order(test_t, decreasing = TRUE)][frankv(-test_t, ties.method = "min",  na.last = "keep") <= 1L]][,`:=`(test_t=replace_na.(test_t,start_iso+delay))][1,test_t]
+  end_iso <- df[test_t > start_iso + delay][test_label==FALSE][, `:=`(diff = test_t - lag(test_t))][, `:=`(diff = replace_na.(diff, 1))][diff == 1, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= n_negatives]][, .SD[order(test_t, decreasing = TRUE)][frankv(-test_t, ties.method = "min",  na.last = "keep") <= 1L]][,`:=`(test_t=replace_na.(test_t,start_iso+delay))][1,test_t]
 } else {
   # release after delay, regardless of test positivity
-  end_iso <- df[[1]][test_t > start_iso + delay][, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= 1L]][,`:=`(test_t=replace_na.(start_iso+delay))][1,test_t]
+  end_iso <- df[test_t > start_iso + delay][, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= 1L]][,`:=`(test_t=replace_na.(start_iso+delay))][1,test_t]
 }
   
    # if isolation period exceeds duration of infection, truncate at delay
@@ -208,13 +209,14 @@ earliest_pos_neg <- function(df,test_to_release,n_negatives,delay){
  #    end_iso <- start_iso+9
   }
   
+
   
   return(paste(start_iso,end_iso,sep=","))
 }
 
 
 inf_and_test <- function(traj,sampling_freq=c(NA,3),end=end){
-  #browser()
+#browser()
   
   message(sprintf("\n%s == SCENARIO %d ======", Sys.time(), traj$sim[1]))
   
@@ -236,8 +238,8 @@ inf_and_test <- function(traj,sampling_freq=c(NA,3),end=end){
     )) %>%
     unnest.(test_times,.drop=F) %>%
     mutate.(
-      ct = pmap_dbl(.f = calc_sensitivity, list(model = m, x = test_t)),
-      test_p = stats::predict(innova_mod, type = "response", newdata = data.frame(ct=ct)),
+      vl = pmap_dbl(.f = calc_sensitivity, list(model = m, x = test_t)),
+      test_p = stats::predict(innova_mod, type = "response", newdata = data.frame(vl=vl)),
       test_label = detector(test_p = test_p,  u = runif(n = n(), 0, 1))
     ) 
 } 

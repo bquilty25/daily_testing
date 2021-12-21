@@ -1,22 +1,22 @@
 source("scripts/utils.r")
 pickering %>% pivot_longer.(cols=c(Innova,`SureScreen F`, Encode)) %>% drop_na(value,culture) %>% ggplot(aes(x=factor(culture),fill=factor(value)),position="stack",stat="identity")+geom_bar()+facet_wrap(~name)+labs(x="Culture positive",fill="LFT positive")
 
-pickering %>% pivot_longer.(cols=c(culture,Innova,"SureScreen F", Encode)) %>% ggplot(aes(x=ct,y=value,group=name,colour=name))+geom_point()+geom_smooth(method=glm,method.args=list(family="binomial"))
+pickering %>% pivot_longer.(cols=c(culture,Innova,"SureScreen F", Encode)) %>% ggplot(aes(x=vl,y=value,group=name,colour=name))+geom_point()+geom_smooth(method=glm,method.args=list(family="binomial"))
 
 #Variant characteristics from Kissler et al.
-variant_char <- tribble(~"variant", ~"prolif_mean", ~"prolif_lb", ~"prolif_ub", ~"clear_mean", ~"clear_lb", ~"clear_ub", ~"min_ct_mean", ~"min_ct_lb", ~"min_ct_ub",
-                        "non_voc", 4.2, 3.3, 5.2, 7.3, 6.1, 8.4, 20.1, 18.3, 21.7,
-                        "alpha", 3.4, 2.6, 4.5, 6.2, 5.2, 7.4, 21.0, 19.1, 20.9,
-                        "delta", 3.0, 2.2, 4.0, 6.2, 5.2, 7.4, 19.8, 18.0, 22.0,
-                        "unvacc", 3.5, 3.0, 4.0, 7.5, 6.8, 8.2, 20.7, 19.8, 20.2,
-                        "vacc", 3.2, 2.5, 4.0, 5.5, 4.6, 6.5, 20.5, 19.0, 21.0,
-                        "omicron_est",3.0/2, 2.2/2, 4.0/2, 6.2, 5.2, 7.4, 19.8, 18.0, 22.0,
+variant_char <- tribble(~"variant", ~"prolif_mean", ~"prolif_lb", ~"prolif_ub", ~"clear_mean", ~"clear_lb", ~"clear_ub", ~"min_ct_mean", ~"min_ct_lb", ~"min_ct_ub",~"max_vl_mean",~"max_vl_lb",~"max_vl_ub",
+                        "non_voc", 4.2, 3.3, 5.2, 7.3, 6.1, 8.4, 20.1, 18.3, 21.7, 8.2, 7.7, 11.6,
+                        "alpha", 3.4, 2.6, 4.5, 6.2, 5.2, 7.4, 21.0, 19.1, 20.9, 7.9, 8.0, 11.5,
+                        "delta", 3.0, 2.2, 4.0, 6.2, 5.2, 7.4, 19.8, 18.0, 22.0, 8.3, 7.7, 11.6,
+                        "unvacc", 3.5, 3.0, 4.0, 7.5, 6.8, 8.2, 20.7, 19.8, 20.2, 8.0, 8.2, 11.5,
+                        "vacc", 3.2, 2.5, 4.0, 5.5, 4.6, 6.5, 20.5, 19.0, 21.0, 8.1, 7.9, 11.5,
+                        "omicron_est",3.0/2, 2.2/2, 4.0/2, 6.2, 5.2, 7.4, 19.8, 18.0, 22.0, 8.3, 7.7, 11.6
 ) %>% 
-  as_tidytable()
+  as_tidytable() 
 
 #Make VL trajectories from variant characteristics and asymptomatic fraction
 traj <- variant_char %>% 
-  filter.(variant=="vacc") %>% 
+  filter.(variant%in%c("unvacc","vacc")) %>% 
   group_split.(variant) %>% 
   map.(~make_trajectories(n_cases = 100,n_sims = 100,asymp_parms=asymp_fraction,seed=seed,variant_info=.x)) %>% 
   bind_rows.()
@@ -39,15 +39,16 @@ scenarios <- crossing(n_negatives=c(NA,1:3),delay=c(3,5,7)) %>%
 neg_analysis <- traj_ %>%
   select.(-c(m,infectiousness)) %>%
   crossing(scenarios) %>% 
-  nest.(data=c(ct, test_t, test_no, test_p, test_label)) %>% #slice_sample.(n=500,.by=c(n_negatives,test_to_release,delay)) %>%
-  mutate_rowwise.(iso_interval = earliest_pos_neg(data,test_to_release,n_negatives,delay)) 
+  nest.(data=c(vl, test_t, test_no, test_p, test_label)) %>% 
+  #slice_sample.(n=500,.by=c(n_negatives,test_to_release,delay)) %>%
+  mutate.(iso_interval = pmap_chr(.f=earliest_pos_neg,.l=list(data,n_negatives,test_to_release,delay)))
 
 qsave(neg_analysis,"neg_analysis.qs")
 
 #cacluate infectious days by days saved
 prop_averted <- neg_analysis %>% 
   left_join.(traj_ %>%
-               nest(data=c(ct, test_t, test_no, test_p, test_label)) %>% 
+               nest(data=c(vl, test_t, test_no, test_p, test_label)) %>% 
                select.(sim,idx,type,variant,m,infectiousness)) %>% 
   unnest.(infectiousness) %>% 
   separate.(iso_interval,into = c("start_iso","end_iso"),sep = ",",convert=TRUE) %>% 
@@ -55,19 +56,22 @@ prop_averted <- neg_analysis %>%
   mutate.(iso=between.(t,start_iso,end_iso-1)) %>% #1 minus upper bound
   summarise.(inf_iso=sum(infectious_label),.by=c(sim,idx,type,variant,n_negatives,delay,test_to_release,start_iso,end_iso,iso)) %>%
   pivot_wider.(names_from = iso,values_from = inf_iso,names_prefix = "iso") %>% 
-  filter.(!is.na(isoTRUE)) %>% 
+  replace_na.(list(isoFALSE=0,isoTRUE=0)) %>% 
+  filter.(isoTRUE+isoFALSE>0) %>% 
   mutate.(inf_days=isoTRUE+isoFALSE,
-          iso_dur=end_iso-start_iso,
+          iso_dur=end_iso-start_iso+1,
           iso_dur=ifelse(iso_dur>10,10,iso_dur),
-          days_saved=10-iso_dur) %>% 
+          days_saved=10-iso_dur,
+          tests_used=ifelse(is.na(n_negatives),0,iso_dur-delay)) %>% 
   rename.(inf_community=isoFALSE,
           inf_iso=isoTRUE)
 
 qsave(prop_averted,"prop_averted.qs")
   
 #create plots
-plot_dat <-  prop_averted %>% mutate.(tests_used=ifelse(is.na(n_negatives),0,iso_dur-delay),
-                 across.(c(iso_dur,days_saved,n_negatives,delay,tests_used),as.factor)) %>% 
+plot_dat <-  prop_averted %>% 
+  filter.(variant=="unvacc") %>% 
+  mutate.(across.(c(iso_dur,n_negatives,delay,tests_used,inf_community),as.factor)) %>% 
   mutate.(n_negatives=fct_explicit_na(n_negatives,"No test"),
           n_negatives=fct_recode(n_negatives,
                                  "3 negatives" = "3",
@@ -79,40 +83,36 @@ plot_dat <-  prop_averted %>% mutate.(tests_used=ifelse(is.na(n_negatives),0,iso
                            "7 days wait" = "7"))
 
 plot_a <- plot_dat %>% 
-  filter.(variant=="vacc") %>% 
-  ggplot(aes(x=days_saved,group=n_negatives,fill=n_negatives,colour=n_negatives))+
-  geom_histogram(alpha=0.5,position="dodge",stat="count")+
-  scale_y_continuous("Proportion of infected individuals",position = "left",labels = percent)+
-  scale_x_discrete("Days saved vs. 10 day isolation")
+  ggplot(aes(x=days_saved,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
+  geom_bar(alpha=0.7)+
+  scale_y_continuous("Proportion of infected individuals",position = "left")+
+  scale_x_continuous("Days saved vs. 10 day isolation",breaks = breaks_width(1))
   #scale_x_reverse("Days saved vs. 10 day isolation",breaks=breaks_width(-1))
 
 plot_b <- plot_dat %>% 
-  filter.(variant=="vacc") %>% 
-  ggplot(aes(x=inf_community,group=n_negatives,fill=n_negatives,colour=n_negatives))+
-  geom_histogram(alpha=0.5,stat="count")+
+  ggplot(aes(x=factor(inf_community),y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
+  geom_bar(alpha=0.7)+
   #scale_x_log10()
   #scale_y_continuous("Proportion of infected individuals",labels = percent)#+
-  scale_x_discrete("Infectious days in the community")
+  labs(x="Infectious days in the community")
 
 #tests used post positive test
 plot_c <- plot_dat  %>% 
-  filter.(variant=="vacc") %>% 
-  ggplot(aes(x=tests_used,group=n_negatives,fill=n_negatives,colour=n_negatives))+
-  geom_histogram(alpha=0.5,position="dodge",stat="count")+
-  scale_y_continuous("Proportion of infected individuals",labels = percent)+
-  scale_x_discrete("Tests used")
+  ggplot(aes(x=tests_used,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
+  geom_bar(alpha=0.7)+
+  labs(x="Tests used")
 
 plot_a+plot_c+plot_b+
   plot_annotation(tag_levels = "A")+
   plot_layout(guides="collect")&
   theme_minimal()&
+  scale_color_brewer(palette = "Set2")&
+  scale_fill_brewer(palette="Set2")&
+  ggh4x::facet_nested(delay+n_negatives~.,nest_line = T)&
   theme(axis.title.y=element_blank(),
         axis.text.y=element_blank(),
         axis.ticks.y=element_blank(),
-        legend.position = "none")&
-  scale_color_brewer(palette = "Set1")&
-  scale_fill_brewer(palette="Set1")&
-  ggh4x::facet_nested(delay+n_negatives~.,nest_line = T)
+        legend.position = "none")
 
 ggsave("main_plot.png",width=210,height=297,units="mm",dpi=600,bg = "white")
 
