@@ -1,7 +1,9 @@
 # Load required packages scripts
-pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","dtplyr","rms","DescTools","MESS","lubridate","lemon","boot","furrr","tidytable","ggtext","fst","scales","data.table","qs","ggh4x","ggdist","profvis")
+remotes::install_github("BlakeRMills/MetBrewer") 
+remotes::install_github("sophiemeakin/technocolour")
 
-plan(multisession,workers=8)
+pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","lubridate","lemon","tidytable","fst","scales","data.table","qs","ggh4x","ggdist","profvis","MetBrewer","technocolour")
+
 seed <- 1000
 
 # # McAloon et al. incubation period meta-analysis
@@ -178,39 +180,36 @@ test_times <- function(type,onset_t,end,sampling_freq=3){
   return(test_timings)
 }
 
-earliest_pos_neg <- function(df,n_negatives,test_to_release,delay){
+earliest_pos_neg <- function(df){
   #browser()
+  
+  #df <- cbind.data.frame(test_t,test_label,n_negatives,test_to_release,delay) %>% as_tidytable()
   
   x_q <- df %>% filter.(test_label==TRUE)
   
   if (nrow(x_q) == 0L){
     start_iso <- Inf
   } else {
-    start_iso <- x_q %>% select.(test_no,test_p,test_t) %>% slice_min.(test_t) %>% pull.(test_t)
+    start_iso <- x_q  %>% slice_min.(test_t) %>% pull.(test_t)
   }
   
-  if(test_to_release){
+  if(df$test_to_release[[1]]){
   # find earliest series of negative tests after delay
-  end_iso <- df[test_t > start_iso + delay][test_label==FALSE][, `:=`(diff = test_t - lag(test_t))][, `:=`(diff = replace_na.(diff, 1))][diff == 1, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= n_negatives]][, .SD[order(test_t, decreasing = TRUE)][frankv(-test_t, ties.method = "min",  na.last = "keep") <= 1L]][,`:=`(test_t=replace_na.(test_t,start_iso+delay))][1,test_t]
+    
+  end_iso <- df[test_t >= start_iso + delay][test_label==FALSE][, `:=`(diff = test_t - shift(test_t))][, `:=`(diff = ifelse(is.na(diff),1, diff))][diff == 1, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= n_negatives]][, .SD[order(test_t, decreasing = TRUE)][frankv(-test_t, ties.method = "min",  na.last = "keep") <= 1L]][,`:=`(test_t=ifelse(is.na(test_t),start_iso+delay,test_t))][1,test_t]
 } else {
   # release after delay, regardless of test positivity
-  end_iso <- df[test_t > start_iso + delay][, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= 1L]][,`:=`(test_t=replace_na.(start_iso+delay))][1,test_t]
+  end_iso <- df[test_t >= start_iso + delay][, .SD[order(test_t)][frankv(test_t, ties.method = "min", na.last = "keep") <= 1L]][,`:=`(test_t=ifelse(is.na(test_t),start_iso+delay,test_t))][1,test_t]
 }
   
    # if isolation period exceeds duration of infection, truncate at delay
   if(is.na(end_iso)){
-    end_iso <- start_iso+delay
+    end_iso <- start_iso+df$delay[[1]]
     
   } else if(is.infinite(start_iso)){
     end_iso <- start_iso
     
- # #if isolation period is greater than 9 days (10-1), truncate at 9 days
- #  } else if(start_iso+end_iso>9){
- #    end_iso <- start_iso+9
-  }
-  
-
-  
+  }  
   return(paste(start_iso,end_iso,sep=","))
 }
 
@@ -224,7 +223,6 @@ inf_and_test <- function(traj,sampling_freq=c(NA,3),end=end){
     mutate(infectiousness = pmap(inf_curve_func, .l = list(m = m,start=start,end=end)))  %>% 
     unnest_wider(infectiousness) %>% 
     ungroup() %>%
-    mutate.(norm_sum = (sum_inf - min(sum_inf)) / (max(sum_inf) - min(sum_inf))) %>% 
     #testing
     crossing(sampling_freq = sampling_freq) %>% 
     mutate.(test_times = pmap(
