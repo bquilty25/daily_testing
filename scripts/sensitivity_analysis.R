@@ -11,7 +11,7 @@
                         ymax=upper),
                     position = position_dodge(0.5))+
     scale_y_continuous(breaks=breaks_width(1),limits=c(0,NA))+
-    labs(x="",y="Days saved vs. 10 days isolation",
+    labs(x="",y="Days saved vs. 10 days isolation\nper individual",
          colour="Number of consecutive days of negative tests required for release")
 )
 
@@ -26,7 +26,7 @@
                         ymax=upper
     ),
     position = position_dodge(0.5))+
-    scale_y_continuous(trans="pseudo_log",labels=function(x)x*100,breaks=c(0,2.5,5,10))+
+    scale_y_continuous(trans=scales::pseudo_log_trans(base=10),labels=function(x)x*100,breaks=c(2.5,5,10,20))+
     labs(x="",y="Days infectious in the community\nper 10,000 infected individuals",
          colour="Number of consecutive days of negative tests required for release")
   
@@ -44,13 +44,12 @@
                         ymax=upper
     ),
     position = position_dodge(0.5))+
-    #scale_y_continuous(trans="pseudo_log",labels=function(x)x*100)+
     labs(x="",y="Tests used \nper 10,000 infected individuals",
          colour="Number of consecutive days of negative tests required for release")
   
 )
 
-plot_2a_supp+plot_2b_supp+plot_2c_supp+
+plot_2a_supp/plot_2b_supp/plot_2c_supp+
   plot_annotation(tag_levels = "A")+
   plot_layout(guides = "collect")&
   #scale_color_brewer(palette="Set2")&
@@ -58,8 +57,7 @@ plot_2a_supp+plot_2b_supp+plot_2c_supp+
                               "#38A3A5",
                               "#57CC99",
                               "#80ED99"))&
-  facet_rep_wrap(variant~.,
-                 ncol=1,
+  facet_rep_grid(vacc_status~omicron,
                  labeller=labeller(variant=c("vacc"="Vaccinated",
                                              "unvacc"="Unvaccinated",
                                              "omicron_vacc_est"="Omicron vaccinated\n(assumed)",

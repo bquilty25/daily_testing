@@ -43,12 +43,6 @@ neg_analysis_dat <- traj_ %>%
 
 neg_analysis <- neg_analysis_dat[, iso_interval:=earliest_pos_neg(.SD),.SDcols=c("test_t","test_label","n_negatives","test_to_release","delay"),by=c("sim","idx","variant","scenario_id")]
 
-
-#se on the mean - to account for arbitrary sample size
-# give population level estimates (cohort not individual level)
-# different risk eval for HCW vs. gen pop
-
-
 qsave(neg_analysis,"neg_analysis.qs")
 neg_analysis <- qread("neg_analysis.qs")
 
@@ -73,7 +67,9 @@ prop_averted <- neg_analysis %>%
           days_saved=10-iso_dur,
           tests_used=ifelse(is.na(n_negatives),0,iso_dur-delay)) %>% 
   rename.(inf_community=isoFALSE,
-          inf_iso=isoTRUE)
+          inf_iso=isoTRUE) %>% 
+  mutate.(vacc_status=ifelse(str_detect(variant,"unvacc",negate = T),"Vaccinated","Unvaccinated"),
+          omicron=ifelse(str_detect(variant,"omicron"),"Omicron","Non-Omicron"))
 
 qsave(prop_averted,"prop_averted.qs")
 prop_averted <- qread("prop_averted.qs")
@@ -81,7 +77,7 @@ prop_averted <- qread("prop_averted.qs")
 #create plots
 plot_dat <-  prop_averted %>% 
   #filter.(variant=="unvacc") %>% 
-  mutate.(across.(c(iso_dur,n_negatives,delay,tests_used),as.factor)) %>% 
+  mutate.(across.(c(iso_dur,n_negatives,delay,tests_used,variant),as.factor)) %>% 
   mutate.(n_negatives=fct_explicit_na(n_negatives,"No test"),
           n_negatives=fct_recode(n_negatives,
                                  "3 negatives" = "3",
@@ -90,7 +86,8 @@ plot_dat <-  prop_averted %>%
           delay=fct_recode(delay,
                            "3 days wait" = "3",
                            "5 days wait" = "5",
-                           "7 days wait" = "7"))
+                           "7 days wait" = "7"),
+          variant=fct_relevel(variant,"vacc","unvacc","omicron_vacc_est","omicron_unvacc_est"))
 
 plot_a <- plot_dat %>% 
   ggplot(aes(x=days_saved,y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
@@ -142,7 +139,7 @@ plot_2a_dat <- prop_averted %>%
   # summarise.(days_saved=sum(days_saved)/n(),
   #            .by=c(sim,variant,n_negatives,delay,test_to_release)) %>% 
   pivot_longer.(c(days_saved)) %>% 
-  group_by(name,variant,n_negatives,delay,test_to_release) %>% 
+  group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
   summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975),type=2),prob=c("lower","upper")), value) %>% 
   pivot_wider(values_from = quantile,names_from=prob) %>% 
   #summarise_at(vars(value), funs(!!!p_funs)) %>% 
@@ -164,7 +161,7 @@ plot_2a_dat <- prop_averted %>%
                         ymax=upper),
                     position = position_dodge(0.5))+
     scale_y_continuous(breaks=breaks_width(1),limits=c(0,NA))+
-    labs(x="",y="Days saved vs. 10 days isolation",
+    labs(x="",y="Days saved vs. 10 days isolation\nper individual",
          colour="Number of consecutive days of negative tests required for release")
 )
 
@@ -181,9 +178,9 @@ plot_2b_dat <- prop_averted %>%
                            "5 days wait" = "5",
                            "7 days wait" = "7")) %>% 
   summarise.(sum_inf_comm=sum(inf_community),
-             .by=c(sim,variant,n_negatives,delay,test_to_release)) %>% 
+             .by=c(sim,variant,n_negatives,delay,test_to_release,vacc_status,omicron)) %>% 
   pivot_longer.(c(sum_inf_comm)) %>% 
-  group_by(name,variant,n_negatives,delay,test_to_release) %>% 
+  group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
   summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975),type=2),prob=c("lower","upper")), value) %>% 
   #mutate(lower = mean - qt(1 - (0.05 / 2), n - 1) * se,
   #      upper = mean + qt(1 - (0.05 / 2), n - 1) * se) %>% 
@@ -224,9 +221,9 @@ plot_2c_dat <- prop_averted %>%
                            "5 days wait" = "5",
                            "7 days wait" = "7")) %>% 
   summarise.(tests_used=sum(tests_used),
-             .by=c(sim,variant,n_negatives,delay,test_to_release)) %>% 
+             .by=c(sim,variant,n_negatives,delay,test_to_release,vacc_status,omicron)) %>% 
   pivot_longer.(c(tests_used)) %>% 
-  group_by(name,variant,n_negatives,delay,test_to_release) %>% 
+  group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
   summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975),type=2),prob=c("lower","upper")), value) %>% 
   #mutate(lower = mean - qt(1 - (0.05 / 2), n - 1) * se,
   #      upper = mean + qt(1 - (0.05 / 2), n - 1) * se) %>% 
@@ -261,7 +258,7 @@ plot_2a+plot_2b+plot_2c+
   scale_color_manual(values=c("#22577A",
     "#38A3A5",
     "#57CC99",
-    "#80ED99"))&
+    "#80ED99"),guide=guide_legend(title.position = "top"))&
   #scale_colour_manual(values=rev(viridis_pal(option="mako",begin=0.4,end=0.8)(6)[c(1:3,6)]))&
   #scale_color_manual(values=rev(met.brewer(name="Robert",n=6,type="discrete")[c(1:3,6)]))&
   # facet_rep_wrap(variant~.,
@@ -277,4 +274,5 @@ plot_2a+plot_2b+plot_2c+
               axis.line.y.left = element_line(),
               legend.position = "bottom")
 
-ggsave("output/main_plot2_vacc.png",width=300,height=100,units="mm",dpi=600,bg = "white")
+ggsave("output/main_plot2_vacc.png",width=250,height=100,units="mm",dpi=600,bg = "white")
+
