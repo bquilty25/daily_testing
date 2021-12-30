@@ -19,7 +19,7 @@ variant_char <- tribble(~"variant", ~"prolif_mean", ~"prolif_lb", ~"prolif_ub", 
 traj <- variant_char %>% 
   filter.(variant%in%c("unvacc","vacc","omicron_vacc_est","omicron_unvacc_est")) %>% 
   group_split.(variant) %>% 
-  map.(~make_trajectories(n_cases = 100,n_sims = 100,asymp_parms=asymp_fraction,seed=seed,variant_info=.x)) %>% 
+  map.(~make_trajectories(n_cases = 250,n_sims = 100,asymp_parms=asymp_fraction,seed=seed,variant_info=.x)) %>% 
   bind_rows.()
 
 #Calculate daily infectiousness and test positivity, remove never-infectious
@@ -121,7 +121,7 @@ plot_a+plot_c+plot_b+
 
 ggsave("output/main_plot.png",width=210,height=297,units="mm",dpi=600,bg = "white")
 
-#dyas saved per person
+#days saved
 plot_2a_dat <- prop_averted %>% 
   mutate.(across.(c(iso_dur,n_negatives,delay,tests_used),as.factor)) %>% 
   mutate.(n_negatives=fct_explicit_na(n_negatives,"No test"),
@@ -136,9 +136,7 @@ plot_2a_dat <- prop_averted %>%
                            "7 days wait" = "7")) %>% 
   pivot_longer.(c(days_saved)) %>% 
   group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
-  summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975)),prob=c("lower","upper")), value) %>% 
-  pivot_wider(values_from = quantile,names_from=prob) %>% 
-  as_tidytable()
+  summarise_each(funs(mean, median, sd, se=sd(.)/sqrt(n()), lower=bayestestR::ci(.,method="ETI")$CI_low,upper=bayestestR::ci(.,method="ETI")$CI_high), value)
 
 (plot_2a <- plot_2a_dat %>%  
     filter.(variant%in%c("vacc")) %>% 
@@ -147,7 +145,7 @@ plot_2a_dat <- prop_averted %>%
     geom_pointrange(aes(x=fct_rev(delay),
                         group= fct_rev(n_negatives),
                         colour=n_negatives,
-                        y=mean,
+                        y=median,
                         ymin=lower,
                         ymax=upper),
                     position = position_dodge(0.5),
@@ -169,13 +167,12 @@ plot_2b_dat <- prop_averted %>%
                            "3 days wait" = "3",
                            "5 days wait" = "5",
                            "7 days wait" = "7")) %>% 
-  summarise.(sum_inf_comm=sum(inf_community),
+  summarise.(sum_inf_comm=sum(inf_community)*(10000/n()),
+             n=n(),
              .by=c(sim,variant,n_negatives,delay,test_to_release,vacc_status,omicron)) %>% 
   pivot_longer.(c(sum_inf_comm)) %>% 
   group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
-  summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975),type=2),prob=c("lower","upper")), value) %>% 
-  pivot_wider(values_from = quantile,names_from=prob) %>% 
-  as_tidytable()
+  summarise_each(funs(mean, median, sd, se=sd(.)/sqrt(n()), lower=bayestestR::ci(.,method="ETI")$CI_low,upper=bayestestR::ci(.,method="ETI")$CI_high), value) 
 
 (plot_2b <- plot_2b_dat %>% 
     filter.(variant%in%c("vacc")) %>% 
@@ -184,14 +181,14 @@ plot_2b_dat <- prop_averted %>%
   geom_pointrange(aes(x=fct_rev(delay),
                       group= fct_rev(n_negatives),
                       colour=n_negatives,
-                      y=mean,
+                      y=median,
                       ymin=lower,
                       ymax=upper
                       ),
                   position = position_dodge(0.5),
                   fatten = 1
                   )+
-    scale_y_continuous(trans=scales::pseudo_log_trans(base=10),labels=function(x)x*100,breaks=c(0,2.5,5,10))+
+    scale_y_continuous(trans="pseudo_log",breaks=c(0,10,100,1000,10000))+
   labs(x="",y="Days infectious in the community\nper 10,000 infected individuals",
        colour="Number of consecutive days of negative tests required for release")
   
@@ -209,11 +206,12 @@ plot_2c_dat <- prop_averted %>%
                            "3 days wait" = "3",
                            "5 days wait" = "5",
                            "7 days wait" = "7")) %>% 
-  summarise.(tests_used=sum(tests_used),
+  summarise.(tests_used=sum(tests_used)*(10000/n()),
+             n=n(),
              .by=c(sim,variant,n_negatives,delay,test_to_release,vacc_status,omicron)) %>% 
   pivot_longer.(c(tests_used)) %>% 
   group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
-  summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975),type=2),prob=c("lower","upper")), value) %>% 
+  summarise_each(funs(mean, median, sd, se=sd(.)/sqrt(n()), lower=bayestestR::ci(.,method="ETI")$CI_low,upper=bayestestR::ci(.,method="ETI")$CI_high), value) %>% 
   pivot_wider(values_from = quantile,names_from=prob) %>% 
   as_tidytable()
 
@@ -224,14 +222,14 @@ plot_2c_dat <- prop_averted %>%
     geom_pointrange(aes(x=fct_rev(delay),
                         group= fct_rev(n_negatives),
                         colour=n_negatives,
-                        y=mean,
+                        y=median,
                         ymin=lower,
                         ymax=upper
     ),
     position = position_dodge(0.5),
     fatten = 1
     )+
-    #scale_y_continuous(trans="pseudo_log",labels=function(x)x*100)+
+    scale_y_continuous()+
     labs(x="",y="Tests used \nper 10,000 infected individuals",
          colour="Number of consecutive days of negative tests required for release")
   

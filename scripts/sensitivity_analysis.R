@@ -28,7 +28,7 @@
     ),
     position = position_dodge(0.5),
     fatten = 1)+
-    scale_y_continuous(trans=scales::pseudo_log_trans(base=10),labels=function(x)x*100,breaks=c(0,2.5,5,10,20))+
+    scale_y_continuous(trans="pseudo_log",breaks=c(0,10,100,1000,10000))+
     labs(x="",y="Days infectious in the community\nper 10,000 infected individuals",
          colour="Number of consecutive days of negative tests required for release")
   
@@ -47,6 +47,7 @@
     ),
     position = position_dodge(0.5),
     fatten = 1)+
+    scale_y_continuous()+
     labs(x="",y="Tests used \nper 10,000 infected individuals",
          colour="Number of consecutive days of negative tests required for release")
   
@@ -73,4 +74,4 @@ plot_2a_supp/plot_2b_supp/plot_2c_supp+
         axis.line.y.left = element_line(),
         legend.position = "bottom")
 
-ggsave("output/plot2_supp.png",width=230,height=297,units="mm",dpi=600,bg = "white")
+ggsave("output/plot2_supp.png",width=210,height=297,units="mm",dpi=600,bg = "white")
