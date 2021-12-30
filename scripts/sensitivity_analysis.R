@@ -9,7 +9,8 @@
                         y=mean,
                         ymin=lower,
                         ymax=upper),
-                    position = position_dodge(0.5))+
+                    position = position_dodge(0.5),
+                    fatten = 1)+
     scale_y_continuous(breaks=breaks_width(1),limits=c(0,NA))+
     labs(x="",y="Days saved vs. 10 days isolation\nper individual",
          colour="Number of consecutive days of negative tests required for release")
@@ -25,8 +26,9 @@
                         ymin=lower,
                         ymax=upper
     ),
-    position = position_dodge(0.5))+
-    scale_y_continuous(trans=scales::pseudo_log_trans(base=10),labels=function(x)x*100,breaks=c(2.5,5,10,20))+
+    position = position_dodge(0.5),
+    fatten = 1)+
+    scale_y_continuous(trans=scales::pseudo_log_trans(base=10),labels=function(x)x*100,breaks=c(0,2.5,5,10,20))+
     labs(x="",y="Days infectious in the community\nper 10,000 infected individuals",
          colour="Number of consecutive days of negative tests required for release")
   
@@ -43,7 +45,8 @@
                         ymin=lower,
                         ymax=upper
     ),
-    position = position_dodge(0.5))+
+    position = position_dodge(0.5),
+    fatten = 1)+
     labs(x="",y="Tests used \nper 10,000 infected individuals",
          colour="Number of consecutive days of negative tests required for release")
   

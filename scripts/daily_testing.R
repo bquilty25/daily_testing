@@ -1,5 +1,5 @@
 source("scripts/utils.r")
-pickering %>% pivot_longer.(cols=c(Innova,`SureScreen F`, Encode)) %>% drop_na(value,culture) %>% ggplot(aes(x=factor(culture),fill=factor(value)),position="stack",stat="identity")+geom_bar()+facet_wrap(~name)+labs(x="Culture positive",fill="LFT positive")
+pickering %>% pivot_longer.(cols=c(Innova,`SureScreen F`, Encode)) %>% drop_na(value,culture) %>% ggplot(aes(x=factor(culture),fill=factor(value)),position="stack",stat="density")+geom_bar()+facet_wrap(~name)+labs(x="Culture positive",fill="LFT positive")
 
 pickering %>% pivot_longer.(cols=c(culture,Innova,"SureScreen F", Encode)) %>% ggplot(aes(x=vl,y=value,group=name,colour=name))+geom_point()+geom_smooth(method=glm,method.args=list(family="binomial"))
 
@@ -39,7 +39,8 @@ scenarios <- crossing(n_negatives=c(NA,1:3),delay=c(3,5,7)) %>%
 #calculate isolation interval given viral load, test positivity and scenarios
 neg_analysis_dat <- traj_ %>%
   select.(-c(m,infectiousness)) %>%
-  crossing.(scenarios)
+  crossing.(scenarios) %>% 
+  replace_na.(list(test_label=FALSE))
 
 neg_analysis <- neg_analysis_dat[, iso_interval:=earliest_pos_neg(.SD),.SDcols=c("test_t","test_label","n_negatives","test_to_release","delay"),by=c("sim","idx","variant","scenario_id")]
 
@@ -69,7 +70,7 @@ prop_averted <- neg_analysis %>%
   rename.(inf_community=isoFALSE,
           inf_iso=isoTRUE) %>% 
   mutate.(vacc_status=ifelse(str_detect(variant,"unvacc",negate = T),"Vaccinated","Unvaccinated"),
-          omicron=ifelse(str_detect(variant,"omicron"),"Omicron","Non-Omicron"))
+          omicron=ifelse(str_detect(variant,"omicron"),"Omicron (assump.)","Non-Omicron"))
 
 qsave(prop_averted,"prop_averted.qs")
 prop_averted <- qread("prop_averted.qs")
@@ -94,13 +95,10 @@ plot_a <- plot_dat %>%
   geom_bar(alpha=0.7)+
   scale_y_continuous("Proportion of infected individuals",position = "left")+
   scale_x_continuous("Days saved vs. 10 day isolation",breaks = breaks_width(1))
-  #scale_x_reverse("Days saved vs. 10 day isolation",breaks=breaks_width(-1))
 
 plot_b <- plot_dat %>% 
   ggplot(aes(x=factor(inf_community),y=..prop..,group=n_negatives,fill=n_negatives,colour=n_negatives))+
   geom_bar(alpha=0.7)+
-  #scale_x_log10()
-  #scale_y_continuous("Proportion of infected individuals",labels = percent)#+
   labs(x="Infectious days in the community")
 
 #tests used post positive test
@@ -136,15 +134,10 @@ plot_2a_dat <- prop_averted %>%
                            "3 days wait" = "3",
                            "5 days wait" = "5",
                            "7 days wait" = "7")) %>% 
-  # summarise.(days_saved=sum(days_saved)/n(),
-  #            .by=c(sim,variant,n_negatives,delay,test_to_release)) %>% 
   pivot_longer.(c(days_saved)) %>% 
   group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
-  summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975),type=2),prob=c("lower","upper")), value) %>% 
+  summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975)),prob=c("lower","upper")), value) %>% 
   pivot_wider(values_from = quantile,names_from=prob) %>% 
-  #summarise_at(vars(value), funs(!!!p_funs)) %>% 
-  #mutate(lower = mean - qt(1 - (0.05 / 2), n - 1) * se,
-  #       upper = mean + qt(1 - (0.05 / 2), n - 1) * se) %>% 
   as_tidytable()
 
 (plot_2a <- plot_2a_dat %>%  
@@ -155,11 +148,10 @@ plot_2a_dat <- prop_averted %>%
                         group= fct_rev(n_negatives),
                         colour=n_negatives,
                         y=mean,
-                        #ymin=`0.025`,
-                        #ymax=`0.975`,
                         ymin=lower,
                         ymax=upper),
-                    position = position_dodge(0.5))+
+                    position = position_dodge(0.5),
+                    fatten = 1)+
     scale_y_continuous(breaks=breaks_width(1),limits=c(0,NA))+
     labs(x="",y="Days saved vs. 10 days isolation\nper individual",
          colour="Number of consecutive days of negative tests required for release")
@@ -182,10 +174,7 @@ plot_2b_dat <- prop_averted %>%
   pivot_longer.(c(sum_inf_comm)) %>% 
   group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
   summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975),type=2),prob=c("lower","upper")), value) %>% 
-  #mutate(lower = mean - qt(1 - (0.05 / 2), n - 1) * se,
-  #      upper = mean + qt(1 - (0.05 / 2), n - 1) * se) %>% 
   pivot_wider(values_from = quantile,names_from=prob) %>% 
-  #summarise_at(vars(value), funs(!!!p_funs)) %>% 
   as_tidytable()
 
 (plot_2b <- plot_2b_dat %>% 
@@ -196,13 +185,13 @@ plot_2b_dat <- prop_averted %>%
                       group= fct_rev(n_negatives),
                       colour=n_negatives,
                       y=mean,
-                      #ymin=`0.025`,
-                      #ymax=`0.975`,
                       ymin=lower,
                       ymax=upper
                       ),
-                  position = position_dodge(0.5))+
-  scale_y_continuous(trans="pseudo_log",labels=function(x)x*100,breaks=c(0,2.5,5,10))+
+                  position = position_dodge(0.5),
+                  fatten = 1
+                  )+
+    scale_y_continuous(trans=scales::pseudo_log_trans(base=10),labels=function(x)x*100,breaks=c(0,2.5,5,10))+
   labs(x="",y="Days infectious in the community\nper 10,000 infected individuals",
        colour="Number of consecutive days of negative tests required for release")
   
@@ -225,10 +214,7 @@ plot_2c_dat <- prop_averted %>%
   pivot_longer.(c(tests_used)) %>% 
   group_by(name,variant,n_negatives,delay,test_to_release,vacc_status,omicron) %>% 
   summarise_each(funs(mean, sd, se=sd(.)/sqrt(n()), n=n(), quantile(.,probs=c(0.025,0.975),type=2),prob=c("lower","upper")), value) %>% 
-  #mutate(lower = mean - qt(1 - (0.05 / 2), n - 1) * se,
-  #      upper = mean + qt(1 - (0.05 / 2), n - 1) * se) %>% 
   pivot_wider(values_from = quantile,names_from=prob) %>% 
-  #summarise_at(vars(value), funs(!!!p_funs)) %>% 
   as_tidytable()
 
 (plot_2c <- plot_2c_dat %>% 
@@ -239,12 +225,12 @@ plot_2c_dat <- prop_averted %>%
                         group= fct_rev(n_negatives),
                         colour=n_negatives,
                         y=mean,
-                        #ymin=`0.025`,
-                        #ymax=`0.975`,
                         ymin=lower,
                         ymax=upper
     ),
-    position = position_dodge(0.5))+
+    position = position_dodge(0.5),
+    fatten = 1
+    )+
     #scale_y_continuous(trans="pseudo_log",labels=function(x)x*100)+
     labs(x="",y="Tests used \nper 10,000 infected individuals",
          colour="Number of consecutive days of negative tests required for release")
@@ -259,14 +245,6 @@ plot_2a+plot_2b+plot_2c+
     "#38A3A5",
     "#57CC99",
     "#80ED99"),guide=guide_legend(title.position = "top"))&
-  #scale_colour_manual(values=rev(viridis_pal(option="mako",begin=0.4,end=0.8)(6)[c(1:3,6)]))&
-  #scale_color_manual(values=rev(met.brewer(name="Robert",n=6,type="discrete")[c(1:3,6)]))&
-  # facet_rep_wrap(variant~.,
-  #                ncol=1,
-  #                labeller=labeller(variant=c("vacc"="Vaccinated",
-  #                                            "unvacc"="Unvaccinated",
-  #                                            "omicron_vacc_est"="Omicron vaccinated (assumed)",
-  #                                            "omicron_unvacc_est"="Omicron unvaccinated (assumed)")))&
   theme_minimal()&
   theme(panel.grid.major.y = element_blank(),
               axis.ticks = element_line(),
