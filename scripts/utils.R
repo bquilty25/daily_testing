@@ -5,7 +5,7 @@ pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDi
 seed <- 1000
 
 ##### KCL ANALYSIS ----
-pickering <- readxl::read_xlsx(here("data","pickering_dat.xlsx")) %>% 
+pickering <- readxl::read_xlsx(here::here("data","pickering_dat.xlsx")) %>% 
   select(-c(`Viral Growth`,...7,...8)) %>% 
   rename("culture"=...6) %>% 
   mutate_at(.vars=vars(`SureScreen F`,Innova,Encode),
@@ -33,26 +33,38 @@ approx_sd <- function(x1, x2){
 }
 
 #bootstrap confidence interval function
-boot_ci <- function(x,nrep=100) {
+# boot_ci <- function(x,nrep=100) {
+# 
+#   trueval <- tibble(param=c("mu","size"),
+#                     mean=c(x$estimate[[2]],
+#                            x$estimate[[1]])) 
+#   
+#   ci <- bootdist(f=x,niter = nrep)$CI %>% 
+#     as.data.frame() %>% 
+#     select(-Median) %>% 
+#     rownames_to_column("param")
+#   
+#   left_join(trueval,ci)
+# }
 
-  trueval <- tibble(param=c("mu","size"),
-                    mean=c(x$estimate[[2]],
-                           x$estimate[[1]])) 
-  
-  ci <- bootdist(f=x,niter = nrep)$CI %>% 
-    as.data.frame() %>% 
-    select(-Median) %>% 
-    rownames_to_column("param")
-  
-  left_join(trueval,ci)
-}
-
-make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asymp_fraction,variant_info){
+make_trajectories <- function(
+  n_cases = 100, n_sims = 100,
+  seed = seed,
+  asymp_parms = asymp_fraction,
+  variant_info, browsing = FALSE
+){
  
+  if (browsing) browser()
   set.seed(seed)
   #simulate CT trajectories
   
-
+  #' TODO:
+  #' sample(
+  #'   factor(c("asymptomatic", "symptomatic")),
+  #'   n_sims,
+  #'   rbeta(n_sims, shape1 = ..., shape2 = ...)
+  
+  
   inf <- data.frame(sim=1:n_sims) %>% 
     mutate.(prop_asy = rbeta(n = n(),
                             shape1 = asymp_parms$shape1,
@@ -97,7 +109,8 @@ make_trajectories <- function(n_cases=100, n_sims=100, seed=1000,asymp_parms=asy
     unnest.(data,.drop=F) %>%  
     select.(-c(y)) %>% 
     pivot_wider.(names_from=name,values_from = x) %>% 
-    left_join.(x_model)
+    left_join.(x_model) %>%
+    select.(c(idx, sim, variant, type, onset_t, prolif, start, end, m))
 
 }
 
@@ -132,6 +145,7 @@ make_proportions <- function(prop_asy, n_cases){
   props <- c("symptomatic"  = (1 - prop_asy),
              "asymptomatic" = prop_asy)
   
+  #' TODO: change to sample
   x <- data.frame(type=rbinom(n=n_cases,size=1,prob = prop_asy)) %>% 
     mutate(type=ifelse(type==1,"asymptomatic","symptomatic"),
            idx=row_number())
@@ -146,6 +160,9 @@ propresponsible=function(R0,k,prop){
   1-pnbinom(q-1,k,mu=R0)-dnbinom(q,k,mu=R0)*remx
 }
 
+#' TODO
+#'  - want this outside of loop
+#'  - eliminate string computation
 test_times <- function(type,onset_t,end,sampling_freq=3){
   #browser()
   
@@ -169,28 +186,28 @@ test_times <- function(type,onset_t,end,sampling_freq=3){
   return(test_timings)
 }
 
-earliest_pos_neg <- function(df){
+earliest_pos_neg <- function(df) {
   #browser()
   
-  #df <- cbind.data.frame(test_t,test_label,n_negatives,test_to_release,delay) %>% as_tidytable()
-  
-  x_q <- df %>% filter.(test_label==TRUE)
-  
-  if (nrow(x_q) == 0L){
-    start_iso <- Inf
-  } else {
-    start_iso <- x_q  %>% slice_min.(test_t) %>% pull.(test_t)
-  }
+  # #df <- cbind.data.frame(test_t,test_label,n_negatives,test_to_release,delay) %>% as_tidytable()
+  # 
+  # x_q <- df %>% filter.(test_label==TRUE)
+  # 
+  # if (nrow(x_q) == 0L){
+  #   start_iso <- Inf
+  # } else {
+  #   start_iso <- x_q  %>% slice_min.(test_t) %>% pull.(test_t)
+  # }
   
   if(df$test_to_release[[1]]){
   # find earliest series of negative tests after delay
   end_iso <- df %>% 
-    filter.(test_t>=start_iso+delay,test_label==FALSE) %>%
-    mutate.(diff=test_t-lags.(test_t,n=1)) %>% 
-    replace_na.(list(diff = 1)) %>% 
-    filter.(diff==1) %>% 
-    slice_min.(n=df$n_negatives[[1]],order_by=test_t) %>% 
-    slice_max.(n=1,test_t) %>% 
+#    filter.(test_t>=start_iso+delay,test_label==FALSE) %>%
+#    mutate.(diff=test_t-lags.(test_t,n=1)) %>% 
+#    replace_na.(list(diff = 1)) %>% 
+#    filter.(diff==1) %>% 
+    slice_min.(n=df$n_negatives[[1]], order_by=test_t) %>% 
+    slice_max.(n=1, test_t) %>% 
     pull.(test_t)
   
 
@@ -203,11 +220,11 @@ earliest_pos_neg <- function(df){
     
   }
   
-  if(is.infinite(start_iso)){
-    end_iso <- start_iso
-  } 
+  # if(is.infinite(start_iso)){
+  #   end_iso <- start_iso
+  # } 
   
-  return(paste(start_iso,end_iso,sep=","))
+  return(end_iso)
 }
 
 
