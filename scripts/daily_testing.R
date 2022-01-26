@@ -22,6 +22,8 @@ traj <- variant_char %>%
   map.(~make_trajectories(n_cases = 250,n_sims = 100,asymp_parms=asymp_fraction,seed=seed,variant_info=.x)) %>% 
   bind_rows.()
 
+#' TODO precalculate test / infection outcomes
+
 #Calculate daily infectiousness and test positivity, remove never-infectious
 traj_ <- traj %>% 
   arrange(variant,sim) %>% 
@@ -42,7 +44,29 @@ neg_analysis_dat <- traj_ %>%
   crossing.(scenarios) %>% 
   replace_na.(list(test_label=FALSE))
 
-neg_analysis <- neg_analysis_dat[, iso_interval:=earliest_pos_neg(.SD),.SDcols=c("test_t","test_label","n_negatives","test_to_release","delay"),by=c("sim","idx","variant","scenario_id")]
+neg_analysis_dat[,
+  start_iso := fifelse(any(test_label), test_t[which.max(test_label)], Inf),
+  by=c("sim","idx","variant","scenario_id")
+]
+
+neg_analysis_dat[(test_t >= start_iso + delay) & (test_label == FALSE),
+   testndelays := c(1, diff(test_t)),
+   by=c("sim","idx","variant","scenario_id")
+]
+
+# neg_analysis <- neg_analysis_dat[,
+#   iso_interval:=earliest_pos_neg(.SD),
+#   .SDcols=c("test_t","test_label","n_negatives","test_to_release","delay"),
+#   by=c("sim","idx","variant","scenario_id")
+# ]
+
+neg_analysis <- neg_analysis_dat[
+  testndelays == 1,
+   iso_interval := earliest_pos_neg(.SD),
+   .SDcols = c("test_t","test_label","n_negatives","test_to_release","delay","start_iso"),
+   by=c("sim","idx","variant","scenario_id")
+]
+
 
 qsave(neg_analysis,"neg_analysis.qs")
 neg_analysis <- qread("neg_analysis.qs")
