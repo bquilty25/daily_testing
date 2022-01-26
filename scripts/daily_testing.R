@@ -19,18 +19,16 @@ variant_char <- tribble(~"variant", ~"prolif_mean", ~"prolif_lb", ~"prolif_ub", 
 traj <- variant_char %>% 
   filter.(variant%in%c("unvacc","vacc","omicron_vacc_est","omicron_unvacc_est")) %>% 
   group_split.(variant) %>% 
-  map.(~make_trajectories(n_cases = 250,n_sims = 100,asymp_parms=asymp_fraction,seed=seed,variant_info=.x)) %>% 
+  map.(~make_trajectories(n_sims = 10000,asymp_parms=asymp_fraction,seed=seed,variant_info=.x)) %>% 
   bind_rows.()
 
 #' TODO precalculate test / infection outcomes
 
 #Calculate daily infectiousness and test positivity, remove never-infectious
 traj_ <- traj %>% 
-  arrange(variant,sim) %>% 
-  group_split.(variant,sim) %>% 
-  map.(.f=inf_and_test,sampling_freq = c(1)) %>% 
-  bind_rows.() %>% 
-  filter.(sum_inf>0)
+  mutate.(infectiousness = pmap(inf_curve_func, .l = list(m = m,start=start,end=end)))  %>% 
+  unnest.(infectiousness) %>% 
+  filter.(sum(infectious_label)>0,.by=c(sim,variant))
 
 #create daily testing scenarios 
 #delay = how long to wait until resuming testing
@@ -39,52 +37,34 @@ scenarios <- crossing(n_negatives=c(NA,1:3),delay=c(3,5,7)) %>%
   mutate.(test_to_release=!is.na(n_negatives),scenario_id=row_number.())
 
 #calculate isolation interval given viral load, test positivity and scenarios
-neg_analysis_dat <- traj_ %>%
-  select.(-c(m,infectiousness)) %>%
-  crossing.(scenarios) %>% 
+neg_analysis_dat <- scenarios %>% 
+  crossing(traj_) %>% 
   replace_na.(list(test_label=FALSE))
 
 neg_analysis_dat[,
-  start_iso := fifelse(any(test_label), test_t[which.max(test_label)], Inf),
-  by=c("sim","idx","variant","scenario_id")
+  start_iso := fifelse(any(test_label), t[which.max(test_label)], Inf),
+  by=c("sim","variant","scenario_id")
 ]
 
-neg_analysis_dat[(test_t >= start_iso + delay) & (test_label == FALSE),
-   testndelays := c(1, diff(test_t)),
-   by=c("sim","idx","variant","scenario_id")
+neg_analysis_dat[(t >= start_iso + delay) & (test_label == FALSE),
+   testndelays := c(1, diff(t)),
+   by=c("sim","variant","scenario_id")
 ]
 
-# neg_analysis <- neg_analysis_dat[,
-#   iso_interval:=earliest_pos_neg(.SD),
-#   .SDcols=c("test_t","test_label","n_negatives","test_to_release","delay"),
-#   by=c("sim","idx","variant","scenario_id")
-# ]
-
-neg_analysis <- neg_analysis_dat[
+neg_analysis_dat[
   testndelays == 1,
-   iso_interval := earliest_pos_neg(.SD),
-   .SDcols = c("test_t","test_label","n_negatives","test_to_release","delay","start_iso"),
-   by=c("sim","idx","variant","scenario_id")
+   end_iso := earliest_pos_neg(.SD),
+   .SDcols = c("t","test_label","n_negatives","test_to_release","delay","start_iso"),
+   by=c("sim","variant","scenario_id")
 ]
 
-
-qsave(neg_analysis,"neg_analysis.qs")
-neg_analysis <- qread("neg_analysis.qs")
 
 #cacluate infectious days by days saved
-prop_averted <- neg_analysis %>% 
-  nest.(data=c(vl, test_t, test_no, test_p, test_label)) %>% 
-  left_join.(traj_ %>%
-               nest(data=c(vl, test_t, test_no, test_p, test_label)) %>% 
-               select.(sim,idx,type,variant,m,infectiousness)) %>% 
-  unnest.(infectiousness) %>% 
-  separate.(iso_interval,into = c("start_iso","end_iso"),sep = ",",convert=TRUE) %>% 
+prop_averted <- neg_analysis_dat %>% 
   filter.(t>=start_iso) %>% 
-  mutate.(iso=between.(t,start_iso,end_iso-1)) %>% #1 minus upper bound
-  summarise.(inf_iso=sum(infectious_label),.by=c(sim,idx,type,variant,n_negatives,delay,test_to_release,start_iso,end_iso,iso)) %>%
+  summarise.(inf_iso=sum(infectious_label),.by=c(sim,variant,scenario_id,iso)) %>%
   pivot_wider.(names_from = iso,values_from = inf_iso,names_prefix = "iso") %>% 
   replace_na.(list(isoFALSE=0,isoTRUE=0)) %>% 
-  filter.(isoTRUE+isoFALSE>0) %>% 
   mutate.(inf_days=isoTRUE+isoFALSE,
           iso_dur=end_iso-start_iso+1,
           iso_dur_over_10=iso_dur>10,

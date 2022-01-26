@@ -1,9 +1,0 @@
-[submodule "infectivityProfile2020"]
-	path = infectivityProfile2020
-	url = https://github.com/ashcroftp/infectivityProfile2020.git
-[submodule "traveller_screening"]
-	path = traveller_screening
-	url = https://github.com/kgostic/traveller_screening.git
-[submodule "covid_imported_cases"]
-	path = covid_imported_cases
-	url = https://github.com/thimotei/covid_imported_cases
