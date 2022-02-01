@@ -84,7 +84,7 @@ make_trajectories <- function(
            end=prolif+clear,
            onset_t=prolif+rnormTrunc(n=n(),mean = 2,sd=1.5,min=0,max=end)
     ) %>% 
-    select.(-c(prolif_mean, prolif_lb, prolif_ub, clear_mean, clear_lb, clear_ub,min_ct_mean,min_ct_lb,min_ct_ub,clear)) %>% 
+    select.(-c(prolif_mean, prolif_lb, prolif_ub, clear_mean, clear_lb, clear_ub,clear)) %>% 
     pivot_longer.(cols = -c(sim,asymptomatic,variant,onset_t),
                  values_to = "x") %>%
     mutate.(y=case_when(name=="start" ~ 0,
@@ -115,13 +115,8 @@ make_trajectories <- function(
 
 inf_curve_func <- function(m,start=0,end=30,trunc_t){
   #browser()
-  x <- tidytable(t=seq(start,end,by=1)) %>% 
-    mutate.(u=runif(n=n(),0,1),
-            vl=m(t),
-            culture_p=stats::predict(culture_mod, type = "response", newdata = tidytable(vl=vl)),
-            infectious_label = rbernoulli(n=n(),p=culture_p),
-            test_p = stats::predict(innova_mod, type = "response", newdata = data.frame(vl=vl)),
-            test_label = rbernoulli(n=n(),p = test_p))
+  x <- tidytable(t=seq(start,20,by=1)) %>% 
+    mutate.(vl=m(t))
   
   return(infectiousness=x)
 }
@@ -146,20 +141,19 @@ propresponsible=function(R0,k,prop){
 }
 
 earliest_pos_neg <- function(df) {
-  
+  #browser()
   if(df$test_to_release[[1]]){
   # find earliest series of negative tests after delay
-  end_iso <- df %>% 
-    slice_min.(n=df$n_negatives[[1]], order_by=t) %>% 
-    slice_max.(n=1, t) %>% 
-    pull.(t)
+  end_iso <- df[(test_label == FALSE), .SD[order(t)][
+    frankv(t, ties.method = "min",na.last = "keep") <= n_negatives]][
+    , .SD[order(t, decreasing = TRUE)][
+      frankv(-t, ties.method = "min", na.last = "keep") <= 1L]][,t]
 
 } else {
   # release after delay, regardless of test positivity
-  end_iso <- df %>% 
-    filter.(t>=start_iso+delay) %>%
-    slice_min.(n=1,order_by=t) %>% 
-    pull.(t)
+  end_iso <- df[, .SD[order(t)][
+    frankv(t, ties.method = "min", na.last = "keep") <= 1L]][,t]
+  
   }
   
   return(end_iso)
@@ -182,3 +176,10 @@ p_names <- map_chr(p, ~paste0(.x*100, "%"))
 
 p_funs <- map.(p, ~partial(quantile, probs = .x, na.rm = TRUE)) %>% 
   set_names(nm = p_names)
+
+
+bootf <- function(var) {
+  #browser()
+  rbind(Hmisc::smean.cl.boot(!!var)) %>% 
+    as_tidytable()
+}
