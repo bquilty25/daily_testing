@@ -43,50 +43,26 @@ ggsave("output/curve_plot.png",height=297,width=210,units="mm",dpi=600,bg = "whi
 
 
 #Detection and infectiousness assumptions
-det_plot <- pickering %>% 
+pickering %>% 
   pivot_longer.(cols=c(culture,Innova,"SureScreen F", Encode),values_to = "prob") %>% 
-  filter(name=="Innova") %>% 
-  select(-name) %>% 
-  mutate(vl_2.5=vl+2.5) %>% 
-  pivot_longer(c(vl,vl_2.5)) %>% 
-  ggplot(aes(x=value,
+  filter(name%in%c("culture","Innova")) %>% 
+  ggplot(aes(x=vl,
              y=prob,
              group=name,
              colour=name))+
   geom_smooth(method=glm,method.args=list(family="binomial"),se=F)+
-  labs(x="Viral load (log10 RNA copies/ml)",y="Probability of detection")+
-  scale_color_manual(values=c("#ff7f00","#fdbf6f"),
-                     labels=c("Baseline","Harder to detect \n(Baseline + 2.5 log10 RNA copies/ml)"),
-                     guide=guide_legend("Assumption", title.position = "top",title.hjust=0.5))
-
-#Detection and infectiousness assumptions
-inf_plot <- pickering %>% 
-  pivot_longer.(cols=c(culture,Innova,"SureScreen F", Encode),values_to = "prob") %>% 
-  filter(name=="culture") %>% 
-  select(-name) %>% 
-  mutate(vl_2.5=vl-2.5) %>% 
-  pivot_longer(c(vl,vl_2.5)) %>% 
-  ggplot(aes(x=value,
-             y=prob,
-             group=name,
-             colour=name))+
-  geom_smooth(method=glm,method.args=list(family="binomial"),se=F)+
-  labs(x="Viral load (log10 RNA copies/ml)",y="Probability of culture/infectiousness")+
-  scale_color_manual(values=c("#33a02c",
-                              "#b2df8a"),
-                     labels=c("Baseline","Lower infectious dose\n(Baseline - 2.5 log10 RNA copies/ml)"),
-                     guide=guide_legend("Assumption", title.position = "top",title.hjust=0.5))
-  
-
-det_plot/inf_plot+
-  plot_annotation(tag_levels = "A")&
-  scale_x_continuous(limits = c(0,12.5))&
-  theme_minimal()&
+  labs(x="Viral load (log10 RNA copies/ml)",y="Probability")+
+  scale_color_manual(values=c("#ff7f00",
+                              "#33a02c"),
+                     labels=c("Culture","LFT"),
+                     guide=guide_legend("Assumption", title.position = "top",title.hjust=0.5))+
+  scale_x_continuous(breaks=breaks_width(2.5))+
+  theme_minimal()+
   theme(panel.grid.minor.y = element_blank(),
         axis.ticks = element_line(),
         axis.line.x.bottom = element_line(),
         axis.line.y.left = element_line(),
         legend.position = "bottom")
 
-ggsave("output/det_inf_assump.png",height=297*0.75,width=210*0.75,units="mm",dpi=600,bg = "white")
+ggsave("output/det_inf_assump.png",height=150,width=210,units="mm",dpi=600,bg = "white")
 

@@ -1,6 +1,6 @@
 # Load required packages 
 
-pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","lubridate","lemon","tidytable","fst","scales","data.table","qs","ggh4x","ggdist","profvis","bayestestR","extraDistr","emdbook")
+pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","lubridate","lemon","tidytable","fst","scales","data.table","qs","ggh4x","ggdist","profvis","bayestestR","extraDistr","emdbook","colorspace")
 
 seed <- 1000
 
@@ -36,14 +36,14 @@ test_model_choice <- function(boolean){
 
 culture_mod <- glm(culture~vl,data=pickering,family="binomial") 
 
-culture_lower_mod <- glm(culture~vl,
-                        data=pickering %>% 
-                          mutate(vl=vl-2.5),family="binomial") 
+# culture_lower_mod <- glm(culture~vl,
+#                         data=pickering %>% 
+#                           mutate(vl=vl-1.5),family="binomial") 
 
 inf_model_choice <- function(boolean){
   #browser()
   if(boolean){
-    culture_lower_mod
+    innova_mod
   }else{
     culture_mod
   }
@@ -65,7 +65,7 @@ approx_sd <- function(x1, x2){
 make_trajectories <- function(
   n_cases = 100, n_sims = 100,
   seed = seed,
-  asymp_parms = asymp_fraction,
+  #asymp_parms = asymp_fraction,
   variant_info, browsing = FALSE
 ){
  
@@ -74,27 +74,28 @@ make_trajectories <- function(
   set.seed(seed)
   #simulate CT trajectories
   
-  inf <- rbbinom(n = n_sims,
-                 size=1,
-                 alpha = asymp_parms$shape1,
-                 beta = asymp_parms$shape2) %>% 
-    as_tidytable() %>% 
-    rename.("asymptomatic"=x) %>% 
-    mutate.(sim=row_number.(),
-            asymptomatic=as.logical(asymptomatic))
-  
+  inf <- tidytable(sim=1:n_sims)
+  # inf <- rbbinom(n = n_sims,
+  #                size=1,
+  #                alpha = asymp_parms$shape1,
+  #                beta = asymp_parms$shape2) %>% 
+  #   as_tidytable() %>% 
+  #   rename.("asymptomatic"=x) %>% 
+  #   mutate.(sim=row_number.(),
+  #           asymptomatic=as.logical(asymptomatic))
+  # 
   traj <- inf %>% 
     crossing.(start=0) %>% 
     crossing.(variant_info) %>% 
     mutate.(prolif=rnormTrunc(n=n(),mean=prolif_mean,sd=approx_sd(prolif_lb,prolif_ub),min=0),
            clear=rnormTrunc(n=n(), mean=clear_mean, sd=approx_sd(clear_lb,clear_ub), min = 0),
-           prolif=ifelse(asymptomatic,prolif*0.8,prolif),
-           clear=ifelse(asymptomatic,clear*0.8,clear),
+           # prolif=ifelse(asymptomatic,prolif*0.8,prolif),
+           # clear=ifelse(asymptomatic,clear*0.8,clear),
            end=prolif+clear,
            onset_t=prolif+rnormTrunc(n=n(),mean = 2,sd=1.5,min=0,max=end)
     ) %>% 
     select.(-c(prolif_mean, prolif_lb, prolif_ub, clear_mean, clear_lb, clear_ub,clear)) %>% 
-    pivot_longer.(cols = -c(sim,asymptomatic,variant,onset_t),
+    pivot_longer.(cols = -c(sim,variant,onset_t),
                  values_to = "x") %>%
     mutate.(y=case_when(name=="start" ~ 0,
                         name=="end"   ~ 0,
@@ -102,7 +103,7 @@ make_trajectories <- function(
             )
             
   models <- traj %>%
-    nest.(data = -c(asymptomatic,variant,onset_t)) %>%  
+    nest.(data = -c(variant,onset_t)) %>%  
     mutate.(
       # Perform approxfun on each set of points
       m  = map.(data, ~approxfun(x=.x$x,y=.x$y))) 
@@ -117,7 +118,7 @@ make_trajectories <- function(
     select.(-c(y)) %>% 
     pivot_wider.(names_from=name,values_from = x) %>% 
     left_join.(x_model) %>%
-    select.(c(sim, variant, asymptomatic, onset_t, prolif, start, end, m)) %>% 
+    select.(c(sim, variant, onset_t, prolif, start, end, m)) %>% 
     arrange(sim)
 
 }
@@ -213,3 +214,16 @@ n_negatives_lab <- function(x) {
 }  
 
 delay_lab <- function(x) { paste0(x, " days wait")}
+
+inf_thresh_lab <- function(x) {
+  ifelse(x,
+   "Lower infectious dose",
+   "Baseline")
+}
+
+#plot_colours <- lighten(c("#22577A",
+#                          "#38A3A5",
+#                          "#57CC99",
+#                          "#80ED99"),amount=0.3)
+
+plot_colours <- rev(lighten(MetBrewer::met.brewer(name="Hokusai3",n=3),amount=0.3))

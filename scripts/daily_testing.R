@@ -18,10 +18,11 @@ variant_char <- tribble(~"variant", ~"prolif_mean", ~"prolif_lb", ~"prolif_ub", 
 traj <- variant_char %>% 
   filter.(variant%in%c("omicron")) %>% 
   group_split.(variant) %>% 
-  map.(~make_trajectories(n_sims = 1000,asymp_parms=asymp_fraction,seed=seed,variant_info=.x)) %>% 
+  map.(~make_trajectories(n_sims = 10000,
+                          #asymp_parms=asymp_fraction,
+                          seed=seed,
+                          variant_info=.x)) %>% 
   bind_rows.()
-
-#' TODO precalculate test / infection outcomes
 
 #Calculate daily infectiousness and test positivity, remove never-infectious
 traj_ <- traj %>%
@@ -30,8 +31,7 @@ traj_ <- traj %>%
   )))  %>%
   unnest.(infectiousness) %>%
   crossing(
-    lower_inf_thresh = c(TRUE, FALSE),
-    higher_detect_thresh = c(TRUE, FALSE)
+    lower_inf_thresh = c(TRUE, FALSE)
   ) %>%
   mutate.(
     culture_p        = stats::predict(
@@ -42,13 +42,13 @@ traj_ <- traj %>%
     infectious_label = rbernoulli(n = n(),
                                   p = culture_p),
     test_p           = stats::predict(
-      object =  test_model_choice(higher_detect_thresh),
+      object =  innova_mod,
       type = "response",
       newdata = tidytable(vl = vl)
     ),
     test_label       = rbernoulli(n = n(),
                                   p = test_p),
-    .by = c(lower_inf_thresh, higher_detect_thresh)
+    .by = c(lower_inf_thresh)
   ) %>%
   replace_na.(list(test_label       = FALSE,
                    infectious_label = FALSE))
@@ -64,34 +64,34 @@ scenarios <- crossing(n_negatives = c(0:2),
 neg_analysis_dat <- traj_ %>% crossing.(scenarios)
 
 neg_analysis_dat[,
-  start_iso := fifelse(any(test_label), t[which.max(test_label)], sample(c(2,3),size = 1)), #if never test positive, assume day 3 (symp onset)
-  by=c("sim","variant","scenario_id", "lower_inf_thresh", "higher_detect_thresh")
+  start_iso := fifelse(any(test_label), t[which.max(test_label)], Inf), 
+  by=c("sim","variant","scenario_id", "lower_inf_thresh")
 ]
 
 neg_analysis_dat[(t >= start_iso + delay),
    testndelays := c(1, diff(t)),
-   by=c("sim","variant","scenario_id", "lower_inf_thresh", "higher_detect_thresh")
+   by=c("sim","variant","scenario_id", "lower_inf_thresh")
 ]
 
 neg_analysis_dat[
   testndelays == 1,
    end_iso := earliest_pos_neg(.SD),
    .SDcols = c("t","test_label","n_negatives","delay","start_iso"),
-   by=c("sim","variant","scenario_id", "lower_inf_thresh", "higher_detect_thresh")
+   by=c("sim","variant","scenario_id", "lower_inf_thresh")
 ]
 
 
 #cacluate infectious days by days saved
 prop_averted <- neg_analysis_dat %>%
-  #filter.(t >= start_iso) %>%
+  filter.(t >= start_iso) %>%
   fill.(
     testndelays,
     end_iso,
     .direction = "up",
-    .by = c(sim, variant, scenario_id, lower_inf_thresh, higher_detect_thresh)
+    .by = c(sim, variant, scenario_id, lower_inf_thresh)
   ) %>%
   mutate.(iso = between(t, start_iso, end_iso - 1),
-          .by = c(sim, variant, scenario_id, lower_inf_thresh, higher_detect_thresh)) %>%
+          .by = c(sim, variant, scenario_id, lower_inf_thresh)) %>%
   summarise.(
     inf_iso = sum(infectious_label, na.rm = T),
     .by = c(
@@ -99,7 +99,6 @@ prop_averted <- neg_analysis_dat %>%
       variant,
       scenario_id,
       lower_inf_thresh, 
-      higher_detect_thresh,
       n_negatives,
       delay,
       iso,
@@ -115,120 +114,119 @@ prop_averted <- neg_analysis_dat %>%
     inf_days = iso_TRUE + iso_FALSE,
     iso_dur = end_iso - start_iso,
     days_saved = 10 - iso_dur,
-    tests_used = ifelse(n_negatives==0,0,iso_dur - delay+1)
+    tests_used = ifelse(n_negatives==0, 0, iso_dur - delay + 1)
   ) %>%
   rename.(inf_community = iso_FALSE,
           inf_iso = iso_TRUE) %>%
   mutate.(across.(c(n_negatives, delay), as.factor),
-          n_negatives=fct_rev(n_negatives)) #%>% 
-  #filter.(higher_detect_thresh==F)
+          n_negatives=fct_rev(n_negatives)) 
 
 qsave(prop_averted,"prop_averted.qs")
 prop_averted <- qread("prop_averted.qs")
 
-#days saved
-plot_2a_dat <- prop_averted[,
-                            #{x=summarise_func(days_saved);as.list(x)},
-                            {x=Hmisc::smean.cl.boot(days_saved,B = 1000);as.list(x)},
-                            by=c("variant","n_negatives","delay","lower_inf_thresh", "higher_detect_thresh")]
+plot_dat <- prop_averted %>% 
+  filter.(lower_inf_thresh==T)
 
-(plot_2a <- plot_2a_dat %>%  
+plot_2a_dat <- plot_dat[,
+                        {x=Hmisc::smean.cl.boot(inf_community>0,B = 1000);as.list(x)},
+                        #{x=boot_func(inf_community,stat="prop_greater");as.list(x)},
+                        #{x=Hmisc::smean.cl.boot(inf_community>0,B = 1000);as.list(x)},
+                        by=c("variant","n_negatives","delay","lower_inf_thresh")]
+
+(plot_2a <- plot_2a_dat %>% 
     ggplot(aes(x=delay,
                group= n_negatives,
-               colour=n_negatives,
                fill=n_negatives,
                y=Mean))+
     coord_flip()+
-    geom_col(position = position_dodge(0.9))+
-    geom_errorbar(aes(x=delay,
+    geom_col(position = position_dodge(0.8),width=0.5)+
+    geom_linerange(aes(x=delay,
                       group= n_negatives,
                       ymin=Lower,
                       ymax=Upper
     ),
     colour="black",
-    position = position_dodge(0.9),
-    width=.2)+
-    scale_y_continuous(breaks=breaks_width(1),limits=c(0,NA))+
-    labs(x="",y="Days saved vs. 10 days isolation\nper individual",
-         colour="Number of consecutive days of negative tests required for release")
-)
-
-plot_2b_dat <- prop_averted[,
-                            {x=Hmisc::smean.cl.boot(inf_community>0,B = 1000);as.list(x)},
-                            #{x=boot_func(inf_community,stat="prop_greater");as.list(x)},
-                            #{x=Hmisc::smean.cl.boot(inf_community>0,B = 1000);as.list(x)},
-                            by=c("variant","n_negatives","delay","lower_inf_thresh", "higher_detect_thresh")]
-
-(plot_2b <- plot_2b_dat %>% 
- ggplot(aes(x=delay,
-               group= n_negatives,
-               colour=n_negatives,
-               fill=n_negatives,
-               y=Mean*10000))+
-    coord_flip()+
-    geom_col(position = position_dodge(1))+
-    geom_errorbar(aes(x=delay,
-                      group= n_negatives,
-                      ymin=Lower*10000,
-                      ymax=Upper*10000
-    ),
-    colour="black",
-    position = position_dodge(1),
+    position = position_dodge(0.8),
     width=.2)+
     scale_y_continuous(trans = pseudo_log_trans(1, 10),
                        #breaks = c(0,lseq(1,1000,length.out = 4)),
-                       labels=scales::percent_format(0.1),
-                       #breaks=c(0,0.005,0.05,0.5)
-                       )+
-  labs(x="",
-       y="Proportion infectious after release")
-  )
-
-
-plot_2c_dat <- prop_averted[,
-               {x=Hmisc::smean.cl.boot(tests_used,B = 1000);as.list(x)},
-               by=c("variant","n_negatives","delay","lower_inf_thresh", "higher_detect_thresh")]
-
-(plot_2c <- plot_2c_dat %>% 
-    ggplot(aes(x=delay,
-           group= n_negatives,
-           colour=n_negatives,
-           fill=n_negatives,
-           y=Mean*10000))+
-    coord_flip()+
-    geom_col(position = position_dodge(1))+
-    geom_errorbar(aes(x=delay,
-                        group= n_negatives,
-                        ymin=Lower*10000,
-                        ymax=Upper*10000
-    ),
-    colour="black",
-    position = position_dodge(1),
-    width=.2
+                       labels=scales::percent_format(trim=F,accuracy = 1),
+                       breaks=pretty_breaks(n=4)
+                       #breaks=function(x)c(min(x),c(0,0.001,0.01,0.1),max(x))
     )+
-    scale_y_continuous(trans = pseudo_log_trans(1e7, 10),
-                       breaks = c(0,seq(5e3,2.5e4,by=5e3)))+
-    labs(x="",y="Tests used \nper 10,000 infected individuals",
-         colour="Number of consecutive days of negative tests required for release")
-  
+    labs(x="",
+         y="Proportion infectious after release")
 )
+
+plot_2b_dat <- plot_dat[,
+                        {x=summarise_func(days_saved);as.list(x)},
+                        #{x=Hmisc::smean.cl.boot(days_saved,B = 1000);as.list(x)},
+                        by=c("variant","n_negatives","delay","lower_inf_thresh")]
+
+plot_2b <- plot_dat %>% 
+  ggplot()+
+  geom_count(aes(x=delay,
+                 y=days_saved,
+                 group=n_negatives,
+                 colour=n_negatives,
+                 size=after_stat(prop)),
+             position = position_dodge(0.8))+
+  geom_pointrange(data=plot_2b_dat,aes(x=delay,
+                                       y=Mean,
+                                       ymin=Lower,
+                                       ymax=Upper,
+                                       group=n_negatives),
+                  colour="black",
+                  fatten = 0.1,
+                  position = position_dodge(0.8))+
+  coord_flip()+
+  scale_y_continuous(breaks=breaks_width(1),limits=c(0,7),expand = expansion(add=0.5))+
+  labs(x="",y="Number of days saved versus a 10 day isolation per person",
+                 colour="Number of consecutive days of negative tests required for release")
+
+plot_2c_dat <- plot_dat[,
+                        {x=summarise_func(tests_used);as.list(x)},
+               #{x=Hmisc::smean.cl.boot(tests_used,B = 1000);as.list(x)},
+               by=c("variant","n_negatives","delay","lower_inf_thresh")]
+
+plot_2c <- plot_dat %>% 
+  ggplot()+
+  geom_count(aes(x=delay,
+                 y=tests_used,
+                 group=n_negatives,
+                 colour=n_negatives,
+                 size=after_stat(prop)),
+             position = position_dodge(0.8))+
+  geom_pointrange(data=plot_2c_dat,aes(x=delay,
+                                       y=Mean,
+                                       ymin=Lower,
+                                       ymax=Upper,
+                                       group=n_negatives),
+                  colour="black",
+                  fatten = 0.1,
+                  position = position_dodge(0.8))+
+  coord_flip()+
+  scale_y_continuous(breaks=breaks_width(1),limits=c(0,6),expand = expansion(add=0.5))+
+  labs(x="",y="Number of tests used per person",
+                 colour="Number of consecutive days of negative tests required for release")
 
 plot_2a+plot_2b+plot_2c+
   plot_annotation(tag_levels = "A")+
   plot_layout(guides = "collect")&
   scale_x_discrete(labels=delay_lab,limits=rev)&
-  scale_color_manual(values=c("#22577A",
-    "#38A3A5",
-    "#57CC99",
-    "#80ED99"),
-    labels=n_negatives_lab,
-    guide=guide_legend(title.position = "top"))&
-  scale_fill_manual(values=c("#22577A",
-                              "#38A3A5",
-                              "#57CC99",
-                              "#80ED99"),
-                     labels=n_negatives_lab,
-                     guide=guide_legend(title.position = "top"))&
+  scale_color_manual(values=plot_colours,
+    #labels=n_negatives_lab,
+    guide=guide_legend(title.position = "top",title.hjust = 1,reverse = T))&
+  scale_fill_manual(values=plot_colours,
+                     #labels=n_negatives_lab,
+                    guide="none",
+                     #guide=guide_legend(title.position = "top",title.hjust = 1,reverse = T)
+                    )&
+  scale_size_area("Proportion",
+                  max_size = 5,
+                  guide=guide_legend(title.position = "top",title.hjust = 0.5),
+                  breaks=c(0.05,0.1,0.15,0.2),
+                  labels=c("5%","10%","15%",">20%"))&
   labs(colour="Number of consecutive days of negative tests required for release",
        fill="Number of consecutive days of negative tests required for release")&
   theme_minimal()&
@@ -236,20 +234,19 @@ plot_2a+plot_2b+plot_2c+
               axis.ticks = element_line(),
               axis.line.x.bottom = element_line(),
               axis.line.y.left = element_line(),
-              legend.position = "bottom")&
-  facet_rep_grid(lower_inf_thresh ~ higher_detect_thresh,labeller=label_both)
+              legend.position = "bottom",
+        legend.title.align=0.5)
 
-ggsave("output/main_plot2_vacc.png",width=500,height=250,units="mm",dpi=600,bg = "white")
+ggsave("output/main_plot.png",width=300,height=150,units="mm",dpi=600,bg = "white")
 
 source("scripts/additional_plots.R")
 
-
 #relative benefit of extra day and test vs. extra day no test
-baseline <- prop_averted %>% 
+baseline <- plot_dat %>% 
   filter(n_negatives==0) %>% 
   nest(-c(sim,variant,scenario_id,lower_inf_thresh,higher_detect_thresh,n_negatives,delay,inf_community))
 
-prop_averted %>% 
+plot_dat %>% 
   left_join(baseline,by=c("sim","variant","lower_inf_thresh","higher_detect_thresh")) %>% 
   filter(delay.x==delay.y) %>% 
   mutate(change=inf_community.x/inf_community.y,
