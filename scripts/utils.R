@@ -1,6 +1,6 @@
 # Load required packages 
 
-pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","lubridate","lemon","tidytable","fst","scales","data.table","qs","ggh4x","ggdist","profvis","bayestestR","extraDistr","emdbook","colorspace")
+pacman::p_load("fitdistrplus","EnvStats","tidyverse","patchwork","here","rriskDistributions","lubridate","lemon","tidytable","fst","scales","data.table","qs","ggh4x","ggdist","profvis","bayestestR","extraDistr","emdbook","colorspace","ggnewscale")
 
 seed <- 1000
 
@@ -49,6 +49,9 @@ inf_model_choice <- function(boolean){
   }
 }
 
+#human challenge
+killingley <- read_csv("data/killingley.csv",col_names = c("vl","p"))
+
 
 # https://www.medrxiv.org/content/10.1101/2020.04.25.20079103v3
 asymp_fraction <- rriskDistributions::get.beta.par(
@@ -61,6 +64,55 @@ approx_sd <- function(x1, x2){
   (x2-x1) / (qnorm(0.95) - qnorm(0.05) )
 }
 
+#Hay et al.
+hay_ind_dat <- read_csv("data/meanvalsindiv.csv") %>% 
+  select(-c(id,tp,infdur)) %>% 
+  rename("peakvl"=dp,
+         "prolif"=wp,
+         "clear"=wr,
+         "variant"=lineage) %>% 
+  pivot_longer(peakvl:clear) %>% 
+  group_by(variant,name) %>% 
+  summarise(mean=mean(value),
+            sd=sd(value)) %>% 
+  pivot_wider(values_from=c(mean,sd)) %>% 
+  mutate(variant=case_when(variant=="Non-variant"~"delta",
+                           TRUE~"omicron"))
+
+convert_Ct_logGEML <- function(Ct, m_conv=-3.609714286, b_conv=40.93733333){
+  out <- (Ct-b_conv)/m_conv * log10(10) + log10(250)
+  return(out) 
+}
+
+hay_dat <- read_csv(file="data/shared_params_df.csv") %>% 
+  select("omicron_peakvl" = dpmeanB_trans, 
+         "delta_peakvl" = dpmeanW_trans,
+         "omicron_prolif" = wpmeanB_trans, 
+         "delta_prolif" = wpmeanW_trans, 
+         "omicron_clear" = wrmeanB_trans, 
+         "delta_clear" = wrmeanW_trans,
+         "peakvl_sd" = dpsd,  
+         "prolif_sd" = wpsd,  
+         "clear_sd" = wrsd)
+
+hay_dat_means <- hay_dat %>% 
+  select(-c(peakvl_sd:clear_sd)) %>% 
+  pivot_longer(everything()) %>% 
+  group_by(name) %>% 
+  summarise(mean=median(value)) %>% 
+  separate(name,sep = "_",into=c("variant","param"))
+
+hay_dat_sd <- hay_dat %>% 
+  select(c(peakvl_sd:clear_sd)) %>% 
+  pivot_longer(everything(),names_to = "param") %>% 
+  group_by(param) %>% 
+  summarise(sd=median(value)) %>% 
+  mutate(param=str_extract(param, "[^_]+"))
+
+hay_dat_est <- hay_dat_means %>% 
+  left_join(hay_dat_sd) %>% 
+  pivot_wider(names_from=param,values_from = c(mean,sd)) #%>% 
+  #mutate(across(c(mean_peakvl,sd_peakvl),convert_Ct_logGEML))
 
 make_trajectories <- function(
   n_cases = 100, n_sims = 100,
@@ -86,24 +138,25 @@ make_trajectories <- function(
   # 
   traj <- inf %>% 
     crossing.(start=0) %>% 
-    crossing.(variant_info) %>% 
-    mutate.(prolif=rnormTrunc(n=n(),mean=prolif_mean,sd=approx_sd(prolif_lb,prolif_ub),min=0),
-           clear=rnormTrunc(n=n(), mean=clear_mean, sd=approx_sd(clear_lb,clear_ub), min = 0),
+    crossing.(hay_dat_est) %>% 
+    mutate.(prolif=round(rnormTrunc(n=n(),mean=mean_prolif,sd=sd_prolif,min = 0.25,max=14)),
+           clear=round(rnormTrunc(n=n(), mean=mean_clear, sd=sd_clear, min = 2,max=30)),
            # prolif=ifelse(asymptomatic,prolif*0.8,prolif),
            # clear=ifelse(asymptomatic,clear*0.8,clear),
            end=prolif+clear,
-           onset_t=prolif+rnormTrunc(n=n(),mean = 2,sd=1.5,min=0,max=end)
-    ) %>% 
-    select.(-c(prolif_mean, prolif_lb, prolif_ub, clear_mean, clear_lb, clear_ub,clear)) %>% 
-    pivot_longer.(cols = -c(sim,variant,onset_t),
+           #onset_t=prolif+rnormTrunc(n=n(),mean = 2,sd=1.5,min=0,max=end)
+    ) %>%
+    select.(-c(mean_prolif, sd_prolif, mean_clear, sd_clear,clear)) %>%
+    pivot_longer.(cols = -c(sim,variant,#,onset_t
+                            mean_peakvl,sd_peakvl),
                  values_to = "x") %>%
-    mutate.(y=case_when(name=="start" ~ 0,
-                        name=="end"   ~ 0,
-                        name=="prolif"  ~ rnorm(n=n(),mean=variant_info[,max_vl_mean],sd=approx_sd(variant_info[,max_vl_lb],variant_info[,max_vl_ub])))
-            )
+    mutate.(y=case_when(name=="start" ~ 40,#convert_Ct_logGEML(40),
+                        name=="end"   ~ 40,#convert_Ct_logGEML(40),
+                        name=="prolif"~rnormTrunc(n=n(),mean=mean_peakvl,sd=sd_peakvl,min=0,max=40))) %>% 
+    select.(-c(mean_peakvl,sd_peakvl))
             
   models <- traj %>%
-    nest.(data = -c(variant,onset_t)) %>%  
+    nest.(data = -c(sim,variant)) %>%  
     mutate.(
       # Perform approxfun on each set of points
       m  = map.(data, ~approxfun(x=.x$x,y=.x$y))) 
@@ -118,7 +171,7 @@ make_trajectories <- function(
     select.(-c(y)) %>% 
     pivot_wider.(names_from=name,values_from = x) %>% 
     left_join.(x_model) %>%
-    select.(c(sim, variant, onset_t, prolif, start, end, m)) %>% 
+    select.(c(sim, variant, prolif, start, end, m)) %>% 
     arrange(sim)
 
 }

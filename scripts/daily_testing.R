@@ -19,13 +19,13 @@ traj <- variant_char %>%
   filter.(variant%in%c("omicron")) %>% 
   group_split.(variant) %>% 
   map.(~make_trajectories(n_sims = 10000,
-                          #asymp_parms=asymp_fraction,
                           seed=seed,
-                          variant_info=.x)) %>% 
+                          variant_info=.x,
+                          browsing = F)) %>% 
   bind_rows.()
 
 #Calculate daily infectiousness and test positivity, remove never-infectious
-traj_ <- traj %>%
+traj_ <- traj %>% filter.(variant%in%c("omicron")) %>% 
   mutate.(infectiousness = pmap(inf_curve_func, .l = list(
     m = m, start = start, end = ceiling(max(end)+5)
   )))  %>%
@@ -33,7 +33,9 @@ traj_ <- traj %>%
   crossing(
     lower_inf_thresh = c(TRUE, FALSE)
   ) %>%
+  rename.("ct"=vl) %>% 
   mutate.(
+    vl=convert_Ct_logGEML(ct),
     culture_p        = stats::predict(
       object = inf_model_choice(lower_inf_thresh),
       type = "response",
@@ -63,16 +65,21 @@ scenarios <- crossing(n_negatives = c(0:2),
 #calculate isolation interval given viral load, test positivity and scenarios
 neg_analysis_dat <- traj_ %>% crossing.(scenarios)
 
+#start isolation from first positive test
 neg_analysis_dat[,
   start_iso := fifelse(any(test_label), t[which.max(test_label)], Inf), 
   by=c("sim","variant","scenario_id", "lower_inf_thresh")
 ]
 
+#calculate interval between negative tests (i.e., look for sequential set of negatives)
 neg_analysis_dat[(t >= start_iso + delay),
    testndelays := c(1, diff(t)),
    by=c("sim","variant","scenario_id", "lower_inf_thresh")
 ]
 
+# of sequential negatives, find those of length specified 
+# (how many negs needed for release?) and return date of last
+# negative test
 neg_analysis_dat[
   testndelays == 1,
    end_iso := earliest_pos_neg(.SD),
@@ -121,11 +128,8 @@ prop_averted <- neg_analysis_dat %>%
   mutate.(across.(c(n_negatives, delay), as.factor),
           n_negatives=fct_rev(n_negatives)) 
 
-qsave(prop_averted,"prop_averted.qs")
-prop_averted <- qread("prop_averted.qs")
-
 plot_dat <- prop_averted %>% 
-  filter.(lower_inf_thresh==T)
+  filter.(lower_inf_thresh==F,variant=="omicron")
 
 plot_2a_dat <- plot_dat[,
                         {x=Hmisc::smean.cl.boot(inf_community>0,B = 1000);as.list(x)},
@@ -180,7 +184,7 @@ plot_2b <- plot_dat %>%
                   fatten = 0.1,
                   position = position_dodge(0.8))+
   coord_flip()+
-  scale_y_continuous(breaks=breaks_width(1),limits=c(0,7),expand = expansion(add=0.5))+
+  scale_y_continuous(breaks=breaks_width(1),limits=c(NA,NA),expand = expansion(add=0.5))+
   labs(x="",y="Number of days saved versus a 10 day isolation per person",
                  colour="Number of consecutive days of negative tests required for release")
 
@@ -206,7 +210,7 @@ plot_2c <- plot_dat %>%
                   fatten = 0.1,
                   position = position_dodge(0.8))+
   coord_flip()+
-  scale_y_continuous(breaks=breaks_width(1),limits=c(0,6),expand = expansion(add=0.5))+
+  scale_y_continuous(breaks=breaks_width(1),limits=c(0,NA),expand = expansion(add=0.5))+
   labs(x="",y="Number of tests used per person",
                  colour="Number of consecutive days of negative tests required for release")
 
@@ -215,16 +219,13 @@ plot_2a+plot_2b+plot_2c+
   plot_layout(guides = "collect")&
   scale_x_discrete(labels=delay_lab,limits=rev)&
   scale_color_manual(values=plot_colours,
-    #labels=n_negatives_lab,
     guide=guide_legend(title.position = "top",title.hjust = 1,reverse = T))&
   scale_fill_manual(values=plot_colours,
-                     #labels=n_negatives_lab,
-                    guide="none",
-                     #guide=guide_legend(title.position = "top",title.hjust = 1,reverse = T)
+                    guide="none"
                     )&
-  scale_size_area("Proportion",
-                  max_size = 5,
-                  guide=guide_legend(title.position = "top",title.hjust = 0.5),
+  scale_size("Proportion",
+                  #max_size = 5,
+                  guide=guide_legend(title.position = "top",title.hjust = 0.5, order = 2),
                   breaks=c(0.05,0.1,0.15,0.2),
                   labels=c("5%","10%","15%",">20%"))&
   labs(colour="Number of consecutive days of negative tests required for release",
@@ -235,7 +236,8 @@ plot_2a+plot_2b+plot_2c+
               axis.line.x.bottom = element_line(),
               axis.line.y.left = element_line(),
               legend.position = "bottom",
-        legend.title.align=0.5)
+        legend.title.align=0.5)&
+  guides(colour = "none",fill = guide_legend(order = 2),size = guide_legend(order = 3))
 
 ggsave("output/main_plot.png",width=300,height=150,units="mm",dpi=600,bg = "white")
 

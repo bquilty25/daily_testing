@@ -23,3 +23,9 @@ martinez.R
 2021-12-23-test-to-release.md
 
 compare_curves.R
+
+data/killingley.csv
+
+data/meanvalsindiv.csv
+
+data/shared_params_df.csv
